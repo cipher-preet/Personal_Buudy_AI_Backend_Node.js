@@ -1,10 +1,11 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-
+import { sessionConfig } from "./Config/session";
 import dns from "dns";
 
 import morgan from "morgan";
+import authRoutes from "./Authentication/Routes";
 
 // Set the DNS server to use for resolving hostnames
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
@@ -15,15 +16,7 @@ app.use(morgan("dev"));
 app.set("trust proxy", 1);
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "http://localhost:3001",
-      "http://localhost:5173",
-      "http://127.0.0.1:3000",
-      "https://7862b8962a32.ngrok-free.app",
-      "https://www.ambemart.com",
-      "www.ambemart.com",
-    ],
+    origin: ["*"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -34,8 +27,11 @@ app.options(/.*/, cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(sessionConfig);
 
 app.use(cookieParser());
+
+app.use("/api/v1/auth", authRoutes);
 
 app.get("/", (req, res) => {
   res.send("server is running");

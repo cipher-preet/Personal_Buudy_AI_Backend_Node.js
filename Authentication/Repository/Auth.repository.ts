@@ -28,11 +28,8 @@ export const sendOTPRepository = async (email: string, password: string) => {
 
     await Otp.create({
       email,
-
       password: hashedPassword,
-
       otp,
-
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
     });
 
@@ -64,6 +61,8 @@ export const verifyOTPRepository = async (
         message: "OTP not found",
       };
     }
+
+    console.log("otpRecord.otp ", otpRecord.otp);
 
     if (otpRecord.otp !== otp) {
       return {
