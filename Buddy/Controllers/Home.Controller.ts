@@ -114,9 +114,10 @@ const startListningController = async (
   next: NextFunction,
 ): Promise<any> => {
   try {
-    const { spaceId } = req.body;
+    const { spaceId, isListning } = req.body;
 
-    const response = await startListningServices(spaceId);
+    const response = await startListningServices(spaceId, isListning);
+
 
     if (response.status === STATUS_CODE.BAD_REQUEST) {
       return ErrorResponse(res, response.status, response.message);

@@ -46,7 +46,7 @@ export const getUserSpacesByUserIdRepository = async (
       if (!mongoose.isValidObjectId(cursor)) {
         return {
           status: STATUS_CODE.BAD_REQUEST,
-          message: 'Invalid cursor value.',
+          message: "Invalid cursor value.",
         };
       }
 
@@ -56,7 +56,7 @@ export const getUserSpacesByUserIdRepository = async (
     }
 
     const spaces = await CreateSpace.find(query)
-      .sort({ _id: -1 }) 
+      .sort({ _id: -1 })
       .limit(pageSize + 1)
       .lean();
 
@@ -65,24 +65,19 @@ export const getUserSpacesByUserIdRepository = async (
     const results = spaces.slice(0, pageSize);
 
     if (spaces.length > pageSize) {
-      nextCursor = String(
-        results[results.length - 1]._id,
-      );
+      nextCursor = String(results[results.length - 1]._id);
     }
 
     return {
       status: STATUS_CODE.OK,
-      message: 'User spaces fetched successfully.',
+      message: "User spaces fetched successfully.",
       data: {
         spaces: results,
         nextCursor,
       },
     };
   } catch (error) {
-    console.log(
-      'error in Home repository Layer ',
-      error,
-    );
+    console.log("error in Home repository Layer ", error);
     throw error;
   }
 };
@@ -105,11 +100,14 @@ export const getUserActiveSpaceRepository = async (userId: string) => {
 
 //------------------------------------------------------------------------------------------------------------------
 
-export const startListningRepository = async (spaceId: string) => {
+export const startListningRepository = async (
+  spaceId: string,
+  isListning: boolean,
+) => {
   try {
     const response = await CreateSpace.findByIdAndUpdate(spaceId, {
       $set: {
-        isListining: true,
+        isListining: isListning,
       },
     });
 
@@ -122,7 +120,8 @@ export const startListningRepository = async (spaceId: string) => {
 
     return {
       status: STATUS_CODE.OK,
-      message: "Start Listning now ...",
+      message: isListning ? "Listning start now ..." : "Listning Stops",
+      isListning: response.isListining
     };
   } catch (error) {
     console.log("error in Home repository Layer ", error);
