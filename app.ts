@@ -6,6 +6,7 @@ import dns from "dns";
 
 import morgan from "morgan";
 import authRoutes from "./Authentication/Routes";
+import homeRoutes from "./Buddy/Routes";
 
 // Set the DNS server to use for resolving hostnames
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
@@ -32,6 +33,7 @@ app.use(sessionConfig);
 app.use(cookieParser());
 
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/v1/home", homeRoutes);
 
 app.get("/", (req, res) => {
   res.send("server is running");

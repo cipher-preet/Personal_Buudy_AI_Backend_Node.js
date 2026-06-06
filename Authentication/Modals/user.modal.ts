@@ -1,16 +1,30 @@
 import mongoose from "mongoose";
 
-const userSchema = new mongoose.Schema(
+export interface IUser extends Document {
+  name: string;
+  email: string;
+  password: string;
+  googleId?: string;
+  provider: "email" | "google";
+  avatar?: string;
+  isVerified: boolean;
+}
+
+const userSchema = new mongoose.Schema<IUser>(
   {
     name: String,
 
     email: {
       type: String,
+      required: true, 
       unique: true,
       sparse: true,
     },
 
-    password: String,
+    password: {
+      type: String,
+      required: true,
+    },
 
     googleId: String,
 
@@ -31,4 +45,4 @@ const userSchema = new mongoose.Schema(
   },
 );
 
-export default mongoose.model("User", userSchema);
+export default mongoose.model<IUser>("User", userSchema);
