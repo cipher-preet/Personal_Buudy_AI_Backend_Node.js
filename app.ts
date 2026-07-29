@@ -1,4 +1,4 @@
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { sessionConfig } from "./Config/session";
@@ -17,7 +17,7 @@ app.use(morgan("dev"));
 app.set("trust proxy", 1);
 app.use(
   cors({
-    origin: ["*"],
+    origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -41,6 +41,22 @@ app.get("/", (req, res) => {
 
 app.get("/health", (req, res) => {
   res.send({ version: "0.0.1", status: "ok", date: "25-12-2025" });
+});
+
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled API error", err);
+
+  const isConfigError = /configured|secret/i.test(err.message);
+  const isSmsError = /BlackSMS|SMS service/i.test(err.message);
+  const message =
+    isConfigError || isSmsError
+      ? err.message
+      : "Something went wrong. Please try again.";
+
+  res.status(500).json({
+    success: false,
+    message,
+  });
 });
 
 export default app;

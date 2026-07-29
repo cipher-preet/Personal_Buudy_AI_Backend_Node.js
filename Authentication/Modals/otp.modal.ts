@@ -4,6 +4,8 @@ const otpSchema = new mongoose.Schema(
   {
     email: String,
 
+    phone: String,
+
     otp: String,
 
     password: String,

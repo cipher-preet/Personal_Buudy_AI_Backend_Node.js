@@ -1,5 +1,8 @@
 import {
   createSpaceRepository,
+  getNoteWorkspacesRepository,
+  getSpaceStatsRepository,
+  getStagedNotesBySpaceRepository,
   getUserActiveSpaceRepository,
   getUserSpacesByUserIdRepository,
   startListningRepository,
@@ -55,6 +58,55 @@ export const startListningServices = async (
 ) => {
   try {
     const response = await startListningRepository(spaceId, isListning);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getSpaceStatsServices = async (
+  userId: string,
+  spaceId: string,
+) => {
+  try {
+    const response = await getSpaceStatsRepository(userId, spaceId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getNoteWorkspacesServices = async (userId: string) => {
+  try {
+    const response = await getNoteWorkspacesRepository(userId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getStagedNotesBySpaceServices = async (
+  userId: string,
+  spaceId: string,
+  limit?: number,
+  cursor?: string,
+) => {
+  try {
+    const response = await getStagedNotesBySpaceRepository(
+      userId,
+      spaceId,
+      limit,
+      cursor,
+    );
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);

@@ -4,8 +4,18 @@ import { Session, SessionData } from "express-session";
 export interface CustomRequest extends Request {
   session: Session &
     Partial<SessionData> & {
-      userId?: string;
-      email?: string;
-      name?: string;
+      user?: {
+        id: string;
+        email?: string;
+        phone?: number;
+        name?: string;
+      };
     };
+  authUser?: {
+    id: string;
+    email?: string;
+    phone?: number;
+    name?: string;
+    provider?: string;
+  };
 }

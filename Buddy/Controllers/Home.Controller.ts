@@ -2,6 +2,9 @@ import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api";
 import { NextFunction, Request, Response } from "express";
 import {
   createSpaceService,
+  getNoteWorkspacesServices,
+  getSpaceStatsServices,
+  getStagedNotesBySpaceServices,
   getUserActiveSpaceServices,
   getUserSpacesByUserIdServices,
   startListningServices,
@@ -131,8 +134,127 @@ const startListningController = async (
 
 //--------------------------------------------------------------------------------
 
+const getSpaceStatsController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = req.query.userId as string;
+    const spaceId = req.query.spaceId as string;
+
+    if (!userId || userId.trim().length === 0) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'userId' query parameter.",
+      );
+    }
+
+    if (!spaceId || spaceId.trim().length === 0) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'spaceId' query parameter.",
+      );
+    }
+
+    const response = await getSpaceStatsServices(userId.trim(), spaceId.trim());
+
+    return SuccessResponse(res, response.status, response.data);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const getNoteWorkspacesController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = req.query.userId as string;
+
+    if (!userId || userId.trim().length === 0) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'userId' query parameter.",
+      );
+    }
+
+    const response = await getNoteWorkspacesServices(userId.trim());
+
+    return SuccessResponse(res, response.status, response.data);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const getStagedNotesBySpaceController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = req.query.userId as string;
+    const spaceId = req.query.spaceId as string;
+    const limit = req.query.limit ? Number(req.query.limit) : 10;
+    const cursor =
+      typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+
+    if (!userId || userId.trim().length === 0) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'userId' query parameter.",
+      );
+    }
+
+    if (!spaceId || spaceId.trim().length === 0) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'spaceId' query parameter.",
+      );
+    }
+
+    if (req.query.limit && (Number.isNaN(limit) || limit <= 0 || limit > 50)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "'limit' must be a number between 1 and 50.",
+      );
+    }
+
+    const response = await getStagedNotesBySpaceServices(
+      userId.trim(),
+      spaceId.trim(),
+      limit,
+      cursor,
+    );
+
+    if (response.data) {
+      return SuccessResponse(res, response.status, response.data);
+    }
+
+    return ErrorResponse(res, response.status, response.message);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 export {
   createSpaceController,
+  getNoteWorkspacesController,
+  getSpaceStatsController,
+  getStagedNotesBySpaceController,
   getUserSpacesByUserIdController,
   getUserActiveSpaceController,
   startListningController,
