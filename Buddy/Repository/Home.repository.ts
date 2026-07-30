@@ -303,3 +303,113 @@ export const getStagedNotesBySpaceRepository = async (
     throw error;
   }
 };
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const getStagedNoteByIdRepository = async (noteId: string) => {
+  try {
+    if (!mongoose.isValidObjectId(noteId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'noteId' value.",
+      };
+    }
+
+    const note = await StagedNotes.findById(noteId)
+      .select("title body evidence")
+      .lean();
+
+    if (!note) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Staged note not found.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        id: String(note._id),
+        title: note.title ?? "",
+        body: note.body ?? "",
+        evidence: note.evidence ?? null,
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const getStagedTasksBySpaceRepository = async (
+  userId: string,
+  spaceId: string,
+  limit = 10,
+  cursor?: string,
+) => {
+  try {
+    const pageSize = Math.min(Math.max(limit, 1), 50);
+
+    const query: Record<string, any> = {
+      userId: createIdFilter(userId),
+      spaceId: createIdFilter(spaceId),
+    };
+
+    if (cursor) {
+      if (!mongoose.isValidObjectId(cursor)) {
+        return {
+          status: STATUS_CODE.BAD_REQUEST,
+          message: "Invalid cursor value.",
+        };
+      }
+
+      query._id = {
+        $lt: new mongoose.Types.ObjectId(cursor),
+      };
+    }
+
+    const tasks = await StagedTasks.find(query)
+      .select("title description body operation status priority dueDate confidence createdAt updatedAt")
+      .sort({ _id: -1 })
+      .limit(pageSize + 1)
+      .lean();
+
+    const results = tasks.slice(0, pageSize);
+    const nextCursor =
+      tasks.length > pageSize && results.length > 0
+        ? String(results[results.length - 1]._id)
+        : null;
+
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        tasks: results.map(task => {
+          const description =
+            typeof task.description === "string"
+              ? task.description
+              : typeof task.body === "string"
+                ? task.body
+                : "";
+
+          return {
+            id: String(task._id),
+            title: task.title ?? "",
+            descriptionPreview: description.trim().slice(0, 140),
+            operation: task.operation ?? task.status ?? null,
+            priority: task.priority ?? null,
+            dueDate: task.dueDate ?? null,
+            confidence: task.confidence ?? null,
+            createdAt: task.createdAt ?? null,
+            updatedAt: task.updatedAt ?? null,
+          };
+        }),
+        nextCursor,
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};

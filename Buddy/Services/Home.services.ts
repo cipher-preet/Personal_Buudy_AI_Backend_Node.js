@@ -2,7 +2,9 @@ import {
   createSpaceRepository,
   getNoteWorkspacesRepository,
   getSpaceStatsRepository,
+  getStagedNoteByIdRepository,
   getStagedNotesBySpaceRepository,
+  getStagedTasksBySpaceRepository,
   getUserActiveSpaceRepository,
   getUserSpacesByUserIdRepository,
   startListningRepository,
@@ -102,6 +104,40 @@ export const getStagedNotesBySpaceServices = async (
 ) => {
   try {
     const response = await getStagedNotesBySpaceRepository(
+      userId,
+      spaceId,
+      limit,
+      cursor,
+    );
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getStagedNoteByIdServices = async (noteId: string) => {
+  try {
+    const response = await getStagedNoteByIdRepository(noteId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getStagedTasksBySpaceServices = async (
+  userId: string,
+  spaceId: string,
+  limit?: number,
+  cursor?: string,
+) => {
+  try {
+    const response = await getStagedTasksBySpaceRepository(
       userId,
       spaceId,
       limit,

@@ -3,7 +3,9 @@ import {
   createSpaceController,
   getNoteWorkspacesController,
   getSpaceStatsController,
+  getStagedNoteByIdController,
   getStagedNotesBySpaceController,
+  getStagedTasksBySpaceController,
   getUserActiveSpaceController,
   getUserSpacesByUserIdController,
   startListningController,
@@ -20,6 +22,8 @@ router.get("/getUserActiveSpace", getUserActiveSpaceController);
 router.get("/getSpaceStats", getSpaceStatsController);
 router.get("/getNoteWorkspaces", getNoteWorkspacesController);
 router.get("/getStagedNotesBySpace", getStagedNotesBySpaceController);
+router.get("/getStagedNoteById", getStagedNoteByIdController);
+router.get("/getStagedTasksBySpace", getStagedTasksBySpaceController);
 router.post("/startListning", startListningController);
 
 export default router;
