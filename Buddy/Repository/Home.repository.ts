@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
-import { STATUS_CODE } from "../../Api";
-import { CreateSpace } from "../Modals/Home.Modal";
-import { StagedNotes, StagedTasks } from "../Modals/Staged.Modal";
+import { STATUS_CODE } from "../../Api/index.js";
+import { CreateSpace } from "../Modals/Home.Modal.js";
+import { StagedNotes, StagedTasks } from "../Modals/Staged.Modal.js";
 
 const createIdFilter = (id: string) => {
   if (!mongoose.isValidObjectId(id)) {

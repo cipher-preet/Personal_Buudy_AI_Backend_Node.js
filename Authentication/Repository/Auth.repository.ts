@@ -1,9 +1,9 @@
 import bcrypt from "bcryptjs";
-import User from "../Modals/user.modal";
-import Otp from "../Modals/otp.modal";
-import { generateOtp } from "../../utils/generateOtp";
-import { sendOtpMail } from "../../utils/sendMail";
-import { STATUS_CODE } from "../../Api";
+import User from "../Modals/user.modal.js";
+import Otp from "../Modals/otp.modal.js";
+import { generateOtp } from "../../utils/generateOtp.js";
+import { sendOtpMail } from "../../utils/sendMail.js";
+import { STATUS_CODE } from "../../Api/index.js";
 
 export const sendOTPRepository = async (email: string, password: string) => {
   try {

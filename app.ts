@@ -1,12 +1,12 @@
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import { sessionConfig } from "./Config/session";
+import { sessionConfig } from "./Config/session.js";
 import dns from "dns";
 
 import morgan from "morgan";
-import authRoutes from "./Authentication/Routes";
-import homeRoutes from "./Buddy/Routes";
+import authRoutes from "./Authentication/Routes.js";
+import homeRoutes from "./Buddy/Routes.js";
 
 // Set the DNS server to use for resolving hostnames
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
@@ -40,7 +40,7 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.send({ version: "0.0.1", status: "ok", date: "25-12-2025" });
+  res.send({ version: "0.0.1", status: "okies", date: "25-12-2020" });
 });
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

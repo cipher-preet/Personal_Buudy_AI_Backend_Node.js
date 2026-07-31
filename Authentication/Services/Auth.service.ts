@@ -1,6 +1,6 @@
 import {
   sendOTPRepository,
-} from "../Repository/Auth.repository";
+} from "../Repository/Auth.repository.js";
 
 export const sendOTPServices = async (email: string, password: string) => {
   try {

@@ -1,4 +1,4 @@
-import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api";
+import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js";
 import { NextFunction, Request, Response } from "express";
 import {
   createSpaceService,
@@ -10,7 +10,7 @@ import {
   getUserActiveSpaceServices,
   getUserSpacesByUserIdServices,
   startListningServices,
-} from "../Services/Home.services";
+} from "../Services/Home.services.js";
 
 const createSpaceController = async (
   req: Request,

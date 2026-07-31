@@ -9,8 +9,8 @@ import {
   getUserActiveSpaceController,
   getUserSpacesByUserIdController,
   startListningController,
-} from "./Controllers/Home.Controller";
-import { requireAuth } from "../MIddleware/Auth/Auth.middleware";
+} from "./Controllers/Home.Controller.js";
+import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
 

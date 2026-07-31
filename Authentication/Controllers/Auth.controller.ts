@@ -1,15 +1,15 @@
-import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api";
+import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js";
 import { NextFunction, Request, Response } from "express";
-import User from "../Modals/user.modal";
+import User from "../Modals/user.modal.js";
 import { OAuth2Client } from "google-auth-library";
 
-import { sendOTPServices } from "./../Services/Auth.service";
+import { sendOTPServices } from "./../Services/Auth.service.js";
 import bcrypt from "bcryptjs";
-import { CustomRequest } from "../../types/types";
-import otpModal from "../Modals/otp.modal";
-import { generateOtp } from "../../utils/generateOtp";
-import { createAuthToken } from "../../utils/authToken";
-import { normalizeIndianMobile, sendBlackSmsOtp } from "../../utils/sendSmsOtp";
+import type { CustomRequest } from "../../types/types.js";
+import otpModal from "../Modals/otp.modal.js";
+import { generateOtp } from "../../utils/generateOtp.js";
+import { createAuthToken } from "../../utils/authToken.js";
+import { normalizeIndianMobile, sendBlackSmsOtp } from "../../utils/sendSmsOtp.js";
 
 const googleClient = new OAuth2Client();
 

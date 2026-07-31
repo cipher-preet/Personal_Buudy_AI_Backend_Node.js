@@ -1,7 +1,7 @@
 import { NextFunction, Response } from "express";
-import { STATUS_CODE } from "../../Api";
-import { CustomRequest } from "../../types/types";
-import { verifyAuthToken } from "../../utils/authToken";
+import { STATUS_CODE } from "../../Api/index.js";
+import type { CustomRequest } from "../../types/types.js";
+import { verifyAuthToken } from "../../utils/authToken.js";
 
 export const requireAuth = (
   req: CustomRequest,

@@ -8,7 +8,7 @@ import {
   getUserActiveSpaceRepository,
   getUserSpacesByUserIdRepository,
   startListningRepository,
-} from "../Repository/Home.repository";
+} from "../Repository/Home.repository.js";
 
 export const createSpaceService = async (spacename: string, userId: string) => {
   try {

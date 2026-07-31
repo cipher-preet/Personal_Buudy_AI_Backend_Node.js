@@ -1,0 +1,26 @@
+Yes. Run these commands inside Google Cloud SDK Shell.
+
+cd /d D:\AI_Personal_Buddy\Node_Backend
+
+Then:
+
+gcloud config set project python-microservice-hub
+gcloud auth login
+gcloud auth configure-docker asia-south1-docker.pkg.dev
+
+Press Y when asked.
+
+Then test the push:
+
+docker push asia-south1-docker.pkg.dev/python-microservice-hub/buddy-backend-repo/buddy-node-backend:latest
+
+After the push succeeds, run:
+
+deploy.bat
+
+So your regular deployment process in Google Cloud SDK Shell is simply:
+
+cd /d D:\AI_Personal_Buddy\Node_Backend
+deploy.bat
+
+You only need to run the login and Docker configuration commands again if authentication expires or you change accounts.

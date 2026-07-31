@@ -8,8 +8,8 @@ import {
   logoutController,
   sendOTPController,
   verifyOTPController,
-} from "./Controllers/Auth.controller";
-import { requireAuth } from "../MIddleware/Auth/Auth.middleware";
+} from "./Controllers/Auth.controller.js";
+import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
 
