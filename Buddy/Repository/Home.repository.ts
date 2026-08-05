@@ -209,6 +209,34 @@ export const getSpaceStatsRepository = async (
 
 //------------------------------------------------------------------------------------------------------------------
 
+export const getProfileSummaryRepository = async (userId: string) => {
+  try {
+    const query = {
+      userId: createIdFilter(userId),
+    };
+
+    const [notesCount, tasksCount, spacesCount] = await Promise.all([
+      StagedNotes.countDocuments(query),
+      StagedTasks.countDocuments(query),
+      CreateSpace.countDocuments(query),
+    ]);
+
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        notesCount,
+        tasksCount,
+        spacesCount,
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
 export const getNoteWorkspacesRepository = async (userId: string) => {
   try {
     const spaces = await CreateSpace.find({

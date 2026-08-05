@@ -3,6 +3,7 @@ import { NextFunction, Request, Response } from "express";
 import {
   createSpaceService,
   getNoteWorkspacesServices,
+  getProfileSummaryServices,
   getSpaceStatsServices,
   getStagedNoteByIdServices,
   getStagedNotesBySpaceServices,
@@ -162,6 +163,32 @@ const getSpaceStatsController = async (
     }
 
     const response = await getSpaceStatsServices(userId.trim(), spaceId.trim());
+
+    return SuccessResponse(res, response.status, response.data);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const getProfileSummaryController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = req.query.userId as string;
+
+    if (!userId || userId.trim().length === 0) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'userId' query parameter.",
+      );
+    }
+
+    const response = await getProfileSummaryServices(userId.trim());
 
     return SuccessResponse(res, response.status, response.data);
   } catch (error) {
@@ -340,6 +367,7 @@ const getStagedTasksBySpaceController = async (
 export {
   createSpaceController,
   getNoteWorkspacesController,
+  getProfileSummaryController,
   getSpaceStatsController,
   getStagedNoteByIdController,
   getStagedNotesBySpaceController,

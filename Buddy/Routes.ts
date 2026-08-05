@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   createSpaceController,
   getNoteWorkspacesController,
+  getProfileSummaryController,
   getSpaceStatsController,
   getStagedNoteByIdController,
   getStagedNotesBySpaceController,
@@ -20,6 +21,7 @@ router.post("/create-space", createSpaceController);
 router.get("/getuserspaces", getUserSpacesByUserIdController);
 router.get("/getUserActiveSpace", getUserActiveSpaceController);
 router.get("/getSpaceStats", getSpaceStatsController);
+router.get("/getProfileSummary", getProfileSummaryController);
 router.get("/getNoteWorkspaces", getNoteWorkspacesController);
 router.get("/getStagedNotesBySpace", getStagedNotesBySpaceController);
 router.get("/getStagedNoteById", getStagedNoteByIdController);

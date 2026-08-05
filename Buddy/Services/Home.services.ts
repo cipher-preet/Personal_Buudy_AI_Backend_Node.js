@@ -1,6 +1,7 @@
 import {
   createSpaceRepository,
   getNoteWorkspacesRepository,
+  getProfileSummaryRepository,
   getSpaceStatsRepository,
   getStagedNoteByIdRepository,
   getStagedNotesBySpaceRepository,
@@ -75,6 +76,18 @@ export const getSpaceStatsServices = async (
 ) => {
   try {
     const response = await getSpaceStatsRepository(userId, spaceId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getProfileSummaryServices = async (userId: string) => {
+  try {
+    const response = await getProfileSummaryRepository(userId);
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
