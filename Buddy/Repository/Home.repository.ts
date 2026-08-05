@@ -78,11 +78,40 @@ export const getUserSpacesByUserIdRepository = async (
       nextCursor = String(results[results.length - 1]._id);
     }
 
+    const resultSpaceIds = results.map(space => space._id);
+    const resultSpaceIdStrings = resultSpaceIds.map(spaceId => String(spaceId));
+    const taskCounts =
+      results.length > 0
+        ? await StagedTasks.aggregate([
+            {
+              $match: {
+                userId: createIdFilter(userId),
+                spaceId: {
+                  $in: [...resultSpaceIds, ...resultSpaceIdStrings],
+                },
+              },
+            },
+            {
+              $group: {
+                _id: "$spaceId",
+                tasksCount: { $sum: 1 },
+              },
+            },
+          ])
+        : [];
+    const taskCountBySpaceId = new Map<string, number>();
+    taskCounts.forEach(item => {
+      taskCountBySpaceId.set(String(item._id), item.tasksCount);
+    });
+
     return {
       status: STATUS_CODE.OK,
       message: "User spaces fetched successfully.",
       data: {
-        spaces: results,
+        spaces: results.map(space => ({
+          ...space,
+          tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0,
+        })),
         nextCursor,
       },
     };
@@ -371,7 +400,7 @@ export const getStagedTasksBySpaceRepository = async (
     }
 
     const tasks = await StagedTasks.find(query)
-      .select("title description body operation status priority dueDate confidence createdAt updatedAt")
+      .select("title description body evidence operation status priority dueDate confidence createdAt updatedAt")
       .sort({ _id: -1 })
       .limit(pageSize + 1)
       .lean();
@@ -396,7 +425,9 @@ export const getStagedTasksBySpaceRepository = async (
           return {
             id: String(task._id),
             title: task.title ?? "",
+            body: description.trim(),
             descriptionPreview: description.trim().slice(0, 140),
+            evidence: task.evidence ?? null,
             operation: task.operation ?? task.status ?? null,
             priority: task.priority ?? null,
             dueDate: task.dueDate ?? null,
