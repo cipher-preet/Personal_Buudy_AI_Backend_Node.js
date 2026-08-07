@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { STATUS_CODE } from "../../Api/index.js";
+import { validatePlanLimit } from "../../Plans/Services/Plan.services.js";
 import { CreateSpace } from "../Modals/Home.Modal.js";
 import { StagedNotes, StagedTasks } from "../Modals/Staged.Modal.js";
 
@@ -18,12 +19,21 @@ export const createSpaceRepository = async (
   userId: string,
 ) => {
   try {
-    const createSpcace = CreateSpace.create({
+    const quota = await validatePlanLimit(userId, "spaces");
+
+    if (!quota.allowed) {
+      return {
+        status: quota.status,
+        message: quota.message,
+      };
+    }
+
+    const createSpace = await CreateSpace.create({
       spacename,
       userId,
     });
 
-    if (!createSpcace) {
+    if (!createSpace) {
       return {
         status: STATUS_CODE.BAD_REQUEST,
         message: "Failed to create space",

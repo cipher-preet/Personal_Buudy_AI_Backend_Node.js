@@ -43,11 +43,17 @@ const createSpaceController = async (
 
     const response = await createSpaceService(spacename.trim(), String(userId));
 
-    if (response.status === STATUS_CODE.BAD_REQUEST) {
-      return ErrorResponse(res, response.status, response.message);
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to create space.",
+      );
     }
 
-    SuccessResponse(res, response.status, response.message);
+    SuccessResponse(res, response.status, {
+      message: response.message || "Space created successfully",
+    });
   } catch (error) {
     next(error);
   }

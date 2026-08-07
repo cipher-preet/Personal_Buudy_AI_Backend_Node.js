@@ -10,6 +10,7 @@ import otpModal from "../Modals/otp.modal.js";
 import { generateOtp } from "../../utils/generateOtp.js";
 import { createAuthToken } from "../../utils/authToken.js";
 import { normalizeIndianMobile, sendBlackSmsOtp } from "../../utils/sendSmsOtp.js";
+import { uploadProfileImageToS3 } from "../../Config/s3.js";
 
 const googleClient = new OAuth2Client();
 
@@ -33,6 +34,22 @@ const setAuthSession = (req: Request, user: any) => {
     phone: user.phone,
     name: user.name || "",
   };
+};
+
+const normalizeUsername = (username: unknown) => {
+  if (typeof username !== "string") {
+    return "";
+  }
+
+  return username.trim().replace(/\s+/g, " ");
+};
+
+const normalizeOptionalString = (value: unknown) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim();
 };
 
 const sendOTPController = async (
@@ -105,7 +122,7 @@ const verifyOTPController = async (
   next: NextFunction,
 ) => {
   try {
-    const { email, otp, phone } = req.body;
+    const { email, otp, phone, username } = req.body;
 
     if (!otp || (!email && !phone)) {
       return ErrorResponse(
@@ -144,17 +161,31 @@ const verifyOTPController = async (
         return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, "OTP expired");
       }
 
+      const normalizedUsername = normalizeUsername(username);
+
+      if (!normalizedUsername || normalizedUsername.length < 2) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Username is required",
+        );
+      }
+
       const userPhone = Number(normalizedPhone.appPhone);
       let user: any = await User.findOne({ phone: userPhone });
       let isNewUser = false;
 
       if (!user) {
         user = await User.create({
+          name: normalizedUsername,
           phone: userPhone,
           provider: "phone",
           isVerified: true,
         });
         isNewUser = true;
+      } else if (!user.name) {
+        user.name = normalizedUsername;
+        await user.save();
       }
 
       setAuthSession(req, user);
@@ -431,9 +462,165 @@ const checkAuthController = async (
       phone: user.phone,
       email: user.email,
       name: user.name,
+      avatar: user.avatar,
       isNewUser: !hasCompletedOnboarding,
       hasCompletedOnboarding,
       sessionAuthenticated: Boolean(req.session?.user?.id),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateMeController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const authUser = req.authUser || req.session?.user;
+
+    if (!authUser?.id) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    const user: any = await User.findById(authUser.id);
+
+    if (!user) {
+      return ErrorResponse(res, STATUS_CODE.NOT_FOUND, "User not found");
+    }
+
+    const nextName = normalizeUsername(req.body.name);
+    const nextEmail = normalizeOptionalString(req.body.email).toLowerCase();
+    const nextPhone = normalizeOptionalString(req.body.phone);
+
+    if (nextName) {
+      if (nextName.length < 2) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Name must be at least 2 characters",
+        );
+      }
+
+      user.name = nextName;
+    }
+
+    if (nextEmail && !user.email) {
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailPattern.test(nextEmail)) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Enter a valid email address",
+        );
+      }
+
+      const existingEmailUser = await User.findOne({
+        email: nextEmail,
+        _id: { $ne: user._id },
+      });
+
+      if (existingEmailUser) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Email is already in use",
+        );
+      }
+
+      user.email = nextEmail;
+    }
+
+    if (nextPhone && !user.phone) {
+      let normalizedPhone;
+
+      try {
+        normalizedPhone = normalizeIndianMobile(nextPhone);
+      } catch (error: any) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          error.message || "Invalid mobile number",
+        );
+      }
+
+      const userPhone = Number(normalizedPhone.appPhone);
+      const existingPhoneUser = await User.findOne({
+        phone: userPhone,
+        _id: { $ne: user._id },
+      });
+
+      if (existingPhoneUser) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Phone number is already in use",
+        );
+      }
+
+      user.phone = userPhone;
+    }
+
+    await user.save();
+    setAuthSession(req, user);
+
+    return SuccessResponse(res, STATUS_CODE.OK, {
+      userId: user._id.toString(),
+      phone: user.phone,
+      email: user.email,
+      name: user.name,
+      avatar: user.avatar,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const updateAvatarController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const authUser = req.authUser || req.session?.user;
+
+    if (!authUser?.id) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!req.file) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Profile image is required",
+      );
+    }
+
+    const user: any = await User.findById(authUser.id);
+
+    if (!user) {
+      return ErrorResponse(res, STATUS_CODE.NOT_FOUND, "User not found");
+    }
+
+    const uploadedImage = await uploadProfileImageToS3({
+      userId: user._id.toString(),
+      buffer: req.file.buffer,
+      mimeType: req.file.mimetype,
+      originalName: req.file.originalname,
+    });
+
+    user.avatar = uploadedImage.url;
+    await user.save();
+    setAuthSession(req, user);
+
+    return SuccessResponse(res, STATUS_CODE.OK, {
+      userId: user._id.toString(),
+      phone: user.phone,
+      email: user.email,
+      name: user.name,
+      avatar: user.avatar,
     });
   } catch (error) {
     next(error);
@@ -470,5 +657,7 @@ export {
   completeOnboardingController,
   checkAuthController,
   getMeController,
+  updateMeController,
+  updateAvatarController,
   logoutController,
 };
