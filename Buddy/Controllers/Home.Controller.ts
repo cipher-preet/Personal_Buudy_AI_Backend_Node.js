@@ -1,7 +1,11 @@
 import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js";
 import { NextFunction, Request, Response } from "express";
+import type { CustomRequest } from "../../types/types.js";
 import {
   createSpaceService,
+  deleteSpaceServices,
+  deleteStagedNoteServices,
+  deleteStagedTaskServices,
   getNoteWorkspacesServices,
   getProfileSummaryServices,
   getSpaceStatsServices,
@@ -54,6 +58,54 @@ const createSpaceController = async (
     SuccessResponse(res, response.status, {
       message: response.message || "Space created successfully",
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const getAuthenticatedUserId = (req: CustomRequest) =>
+  req.authUser?.id || req.session?.user?.id;
+
+//--------------------------------------------------------------------------------
+
+const deleteSpaceController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const { spaceId } = req.body;
+    const userId = getAuthenticatedUserId(req);
+
+    if (!userId) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.UNAUTHORIZED,
+        "Unauthorized",
+      );
+    }
+
+    if (!spaceId || typeof spaceId !== "string") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'spaceId'.",
+      );
+    }
+
+    const response = await deleteSpaceServices(String(userId), spaceId.trim());
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to delete space.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, response);
   } catch (error) {
     next(error);
   }
@@ -315,6 +367,48 @@ const getStagedNoteByIdController = async (
 
 //--------------------------------------------------------------------------------
 
+const deleteStagedNoteController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const { noteId } = req.body;
+    const userId = getAuthenticatedUserId(req);
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!noteId || typeof noteId !== "string") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'noteId'.",
+      );
+    }
+
+    const response = await deleteStagedNoteServices(
+      String(userId),
+      noteId.trim(),
+    );
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to delete note.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, response);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 const getStagedTasksBySpaceController = async (
   req: Request,
   res: Response,
@@ -370,8 +464,53 @@ const getStagedTasksBySpaceController = async (
 
 //--------------------------------------------------------------------------------
 
+const deleteStagedTaskController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const { taskId } = req.body;
+    const userId = getAuthenticatedUserId(req);
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!taskId || typeof taskId !== "string") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'taskId'.",
+      );
+    }
+
+    const response = await deleteStagedTaskServices(
+      String(userId),
+      taskId.trim(),
+    );
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to delete task.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, response);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 export {
   createSpaceController,
+  deleteSpaceController,
+  deleteStagedNoteController,
+  deleteStagedTaskController,
   getNoteWorkspacesController,
   getProfileSummaryController,
   getSpaceStatsController,

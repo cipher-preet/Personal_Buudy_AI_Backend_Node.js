@@ -2,7 +2,9 @@ import { Router } from "express";
 import multer from "multer";
 import {
   completeOnboardingController,
+  checkPhoneController,
   checkAuthController,
+  deleteAccountController,
   getMeController,
   googleLoginController,
   loginController,
@@ -31,6 +33,7 @@ const profileImageUpload = multer({
 });
 
 router.post("/send-otp", sendOTPController);
+router.post("/check-phone", checkPhoneController);
 router.post("/verify-otp", verifyOTPController);
 router.post("/login", loginController);
 router.post("/google", googleLoginController);
@@ -45,5 +48,6 @@ router.patch(
   updateAvatarController,
 );
 router.post("/logout", logoutController);
+router.delete("/me", requireAuth, deleteAccountController);
 
 export default router;

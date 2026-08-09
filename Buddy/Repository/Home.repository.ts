@@ -60,7 +60,7 @@ export const getUserSpacesByUserIdRepository = async (
   try {
     const pageSize = Math.min(Math.max(limit, 1), 50);
 
-    const query: Record<string, any> = { userId };
+    const query: Record<string, any> = { userId, deletedAt: null };
 
     if (cursor) {
       if (!mongoose.isValidObjectId(cursor)) {
@@ -138,6 +138,7 @@ export const getUserActiveSpaceRepository = async (userId: string) => {
     const response = await CreateSpace.find({
       userId: userId,
       isListining: true,
+      deletedAt: null,
     }).select("-createdAt -updatedAt -__v");
 
     return response ?? [];
@@ -154,11 +155,17 @@ export const startListningRepository = async (
   isListning: boolean,
 ) => {
   try {
-    const response = await CreateSpace.findByIdAndUpdate(spaceId, {
-      $set: {
-        isListining: isListning,
+    const response = await CreateSpace.findOneAndUpdate(
+      {
+        _id: spaceId,
+        deletedAt: null,
       },
-    });
+      {
+        $set: {
+          isListining: isListning,
+        },
+      },
+    );
 
     if (!response) {
       return {
@@ -171,6 +178,55 @@ export const startListningRepository = async (
       status: STATUS_CODE.OK,
       message: isListning ? "Listning start now ..." : "Listning Stops",
       isListning: response.isListining
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const deleteSpaceRepository = async (
+  userId: string,
+  spaceId: string,
+) => {
+  try {
+    if (!mongoose.isValidObjectId(spaceId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'spaceId' value.",
+      };
+    }
+
+    const response = await CreateSpace.findOneAndUpdate(
+      {
+        _id: spaceId,
+        userId: createIdFilter(userId),
+        deletedAt: null,
+      },
+      {
+        $set: {
+          deletedAt: new Date(),
+          isListining: false,
+        },
+      },
+      { new: true },
+    );
+
+    if (!response) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Space not found.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: "Space deleted successfully.",
+      data: {
+        deletedSpaceId: String(response._id),
+      },
     };
   } catch (error) {
     console.log("error in Home repository Layer ", error);
@@ -228,7 +284,10 @@ export const getProfileSummaryRepository = async (userId: string) => {
     const [notesCount, tasksCount, spacesCount] = await Promise.all([
       StagedNotes.countDocuments(query),
       StagedTasks.countDocuments(query),
-      CreateSpace.countDocuments(query),
+      CreateSpace.countDocuments({
+        userId: createIdFilter(userId),
+        deletedAt: null,
+      }),
     ]);
 
     return {
@@ -251,6 +310,7 @@ export const getNoteWorkspacesRepository = async (userId: string) => {
   try {
     const spaces = await CreateSpace.find({
       userId: createIdFilter(userId),
+      deletedAt: null,
     })
       .select("spacename description")
       .sort({ _id: -1 })
@@ -410,6 +470,45 @@ export const getStagedNoteByIdRepository = async (noteId: string) => {
 
 //------------------------------------------------------------------------------------------------------------------
 
+export const deleteStagedNoteRepository = async (
+  userId: string,
+  noteId: string,
+) => {
+  try {
+    if (!mongoose.isValidObjectId(noteId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'noteId' value.",
+      };
+    }
+
+    const note = await StagedNotes.findOneAndDelete({
+      _id: noteId,
+      userId: createIdFilter(userId),
+    });
+
+    if (!note) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Staged note not found.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: "Note deleted successfully.",
+      data: {
+        deletedNoteId: String(note._id),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
 export const getStagedTasksBySpaceRepository = async (
   userId: string,
   spaceId: string,
@@ -475,6 +574,45 @@ export const getStagedTasksBySpaceRepository = async (
           };
         }),
         nextCursor,
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const deleteStagedTaskRepository = async (
+  userId: string,
+  taskId: string,
+) => {
+  try {
+    if (!mongoose.isValidObjectId(taskId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'taskId' value.",
+      };
+    }
+
+    const task = await StagedTasks.findOneAndDelete({
+      _id: taskId,
+      userId: createIdFilter(userId),
+    });
+
+    if (!task) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Staged task not found.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: "Task deleted successfully.",
+      data: {
+        deletedTaskId: String(task._id),
       },
     };
   } catch (error) {

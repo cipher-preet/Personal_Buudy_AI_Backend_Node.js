@@ -1,5 +1,10 @@
 @echo off
 
+if not exist cloud-run-env.yaml (
+ echo cloud-run-env.yaml not found. Run this script from the Node_Backend folder.
+ exit /b 1
+)
+
 echo ======================================
 echo Building TypeScript...
 echo ======================================
@@ -29,7 +34,9 @@ echo ======================================
 gcloud run deploy buddy-node-backend ^
  --image asia-south1-docker.pkg.dev/python-microservice-hub/buddy-backend-repo/buddy-node-backend:latest ^
  --region asia-south1 ^
+ --env-vars-file cloud-run-env.yaml ^
  --quiet
+if errorlevel 1 exit /b 1
 
 echo ======================================
 echo Deployment Complete!

@@ -1,5 +1,8 @@
 import {
   createSpaceRepository,
+  deleteSpaceRepository,
+  deleteStagedNoteRepository,
+  deleteStagedTaskRepository,
   getNoteWorkspacesRepository,
   getProfileSummaryRepository,
   getSpaceStatsRepository,
@@ -14,6 +17,21 @@ import {
 export const createSpaceService = async (spacename: string, userId: string) => {
   try {
     const response = await createSpaceRepository(spacename, userId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//---------------------------------------------------------------------------------------------------
+
+export const deleteSpaceServices = async (
+  userId: string,
+  spaceId: string,
+) => {
+  try {
+    const response = await deleteSpaceRepository(userId, spaceId);
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
@@ -143,6 +161,21 @@ export const getStagedNoteByIdServices = async (noteId: string) => {
 
 //----------------------------------------------------------------------------------------------
 
+export const deleteStagedNoteServices = async (
+  userId: string,
+  noteId: string,
+) => {
+  try {
+    const response = await deleteStagedNoteRepository(userId, noteId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
 export const getStagedTasksBySpaceServices = async (
   userId: string,
   spaceId: string,
@@ -156,6 +189,21 @@ export const getStagedTasksBySpaceServices = async (
       limit,
       cursor,
     );
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const deleteStagedTaskServices = async (
+  userId: string,
+  taskId: string,
+) => {
+  try {
+    const response = await deleteStagedTaskRepository(userId, taskId);
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);

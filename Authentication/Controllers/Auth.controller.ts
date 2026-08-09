@@ -1,5 +1,6 @@
 import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js";
 import { NextFunction, Request, Response } from "express";
+import mongoose from "mongoose";
 import User from "../Modals/user.modal.js";
 import { OAuth2Client } from "google-auth-library";
 
@@ -11,6 +12,8 @@ import { generateOtp } from "../../utils/generateOtp.js";
 import { createAuthToken } from "../../utils/authToken.js";
 import { normalizeIndianMobile, sendBlackSmsOtp } from "../../utils/sendSmsOtp.js";
 import { uploadProfileImageToS3 } from "../../Config/s3.js";
+import { CreateSpace } from "../../Buddy/Modals/Home.Modal.js";
+import { StagedNotes, StagedTasks } from "../../Buddy/Modals/Staged.Modal.js";
 
 const googleClient = new OAuth2Client();
 
@@ -51,6 +54,19 @@ const normalizeOptionalString = (value: unknown) => {
 
   return value.trim();
 };
+
+const createIdFilter = (id: string) => {
+  if (!mongoose.isValidObjectId(id)) {
+    return id;
+  }
+
+  return {
+    $in: [id, new mongoose.Types.ObjectId(id)],
+  };
+};
+
+const getAuthenticatedUserId = (req: CustomRequest) =>
+  req.authUser?.id || req.session?.user?.id;
 
 const sendOTPController = async (
   req: Request,
@@ -116,6 +132,52 @@ const sendOTPController = async (
 
 //-------------------------------------------------------------------------
 
+const checkPhoneController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Mobile number is required",
+      );
+    }
+
+    let normalizedPhone;
+
+    try {
+      normalizedPhone = normalizeIndianMobile(phone);
+    } catch (error: any) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        error.message || "Invalid mobile number",
+      );
+    }
+
+    const userPhone = Number(normalizedPhone.appPhone);
+    const user = await User.findOne({ phone: userPhone }).select(
+      "_id name phone onboarding",
+    );
+
+    return SuccessResponse(res, STATUS_CODE.OK, {
+      exists: Boolean(user),
+      phone: userPhone,
+      name: user?.name,
+      hasCompletedOnboarding: Boolean((user as any)?.onboarding?.completedAt),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//-------------------------------------------------------------------------
+
 const verifyOTPController = async (
   req: CustomRequest,
   res: Response,
@@ -161,21 +223,21 @@ const verifyOTPController = async (
         return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, "OTP expired");
       }
 
-      const normalizedUsername = normalizeUsername(username);
-
-      if (!normalizedUsername || normalizedUsername.length < 2) {
-        return ErrorResponse(
-          res,
-          STATUS_CODE.BAD_REQUEST,
-          "Username is required",
-        );
-      }
-
       const userPhone = Number(normalizedPhone.appPhone);
       let user: any = await User.findOne({ phone: userPhone });
       let isNewUser = false;
 
       if (!user) {
+        const normalizedUsername = normalizeUsername(username);
+
+        if (!normalizedUsername || normalizedUsername.length < 2) {
+          return ErrorResponse(
+            res,
+            STATUS_CODE.BAD_REQUEST,
+            "Username is required",
+          );
+        }
+
         user = await User.create({
           name: normalizedUsername,
           phone: userPhone,
@@ -184,8 +246,12 @@ const verifyOTPController = async (
         });
         isNewUser = true;
       } else if (!user.name) {
-        user.name = normalizedUsername;
-        await user.save();
+        const normalizedUsername = normalizeUsername(username);
+
+        if (normalizedUsername) {
+          user.name = normalizedUsername;
+          await user.save();
+        }
       }
 
       setAuthSession(req, user);
@@ -649,8 +715,75 @@ const logoutController = async (
   }
 };
 
+const deleteAccountController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const { confirmation } = req.body;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (confirmation !== "DELETE") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        'Type "DELETE" to confirm account deletion',
+      );
+    }
+
+    if (!mongoose.isValidObjectId(userId)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid authenticated user",
+      );
+    }
+
+    const user: any = await User.findById(userId);
+
+    if (!user) {
+      return ErrorResponse(res, STATUS_CODE.NOT_FOUND, "User not found");
+    }
+
+    const userFilter = createIdFilter(String(user._id));
+
+    const [spacesResult, notesResult, tasksResult] = await Promise.all([
+      CreateSpace.deleteMany({ userId: userFilter }),
+      StagedNotes.deleteMany({ userId: userFilter }),
+      StagedTasks.deleteMany({ userId: userFilter }),
+    ]);
+
+    await User.findByIdAndDelete(user._id);
+
+    req.session?.destroy(error => {
+      if (error) {
+        return next(error);
+      }
+
+      res.clearCookie("b2b.sid");
+
+      return SuccessResponse(res, STATUS_CODE.OK, {
+        message: "Account deleted successfully",
+        deleted: {
+          spaces: spacesResult.deletedCount ?? 0,
+          notes: notesResult.deletedCount ?? 0,
+          tasks: tasksResult.deletedCount ?? 0,
+        },
+      });
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export {
   sendOTPController,
+  checkPhoneController,
   verifyOTPController,
   loginController,
   googleLoginController,
@@ -660,4 +793,5 @@ export {
   updateMeController,
   updateAvatarController,
   logoutController,
+  deleteAccountController,
 };
