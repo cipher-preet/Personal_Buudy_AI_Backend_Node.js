@@ -14,7 +14,7 @@ const createSpaceSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
-    isListining: {
+    isListning: {
       type: Boolean,
       default: false,
     },

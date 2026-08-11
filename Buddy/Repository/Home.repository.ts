@@ -137,7 +137,7 @@ export const getUserActiveSpaceRepository = async (userId: string) => {
   try {
     const response = await CreateSpace.find({
       userId: userId,
-      isListining: true,
+      isListning: true,
       deletedAt: null,
     }).select("-createdAt -updatedAt -__v");
 
@@ -152,9 +152,16 @@ export const getUserActiveSpaceRepository = async (userId: string) => {
 
 export const startListningRepository = async (
   spaceId: string,
-  isListning: boolean,
+  isListning: unknown,
 ) => {
   try {
+    if (!spaceId || typeof isListning !== "boolean") {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "spaceId and boolean isListning are required",
+      };
+    }
+
     const response = await CreateSpace.findOneAndUpdate(
       {
         _id: spaceId,
@@ -162,9 +169,10 @@ export const startListningRepository = async (
       },
       {
         $set: {
-          isListining: isListning,
+          isListning: isListning,
         },
       },
+      { new: true },
     );
 
     if (!response) {
@@ -177,7 +185,7 @@ export const startListningRepository = async (
     return {
       status: STATUS_CODE.OK,
       message: isListning ? "Listning start now ..." : "Listning Stops",
-      isListning: response.isListining
+      isListning: response.isListning,
     };
   } catch (error) {
     console.log("error in Home repository Layer ", error);
@@ -208,7 +216,7 @@ export const deleteSpaceRepository = async (
       {
         $set: {
           deletedAt: new Date(),
-          isListining: false,
+          isListning: false,
         },
       },
       { new: true },

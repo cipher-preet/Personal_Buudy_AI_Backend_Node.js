@@ -75,7 +75,7 @@ export const getUserActiveSpaceServices = async (userId: string) => {
 
 export const startListningServices = async (
   spaceId: string,
-  isListning: boolean,
+  isListning: unknown,
 ) => {
   try {
     const response = await startListningRepository(spaceId, isListning);
