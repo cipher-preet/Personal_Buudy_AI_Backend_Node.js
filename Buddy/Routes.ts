@@ -14,6 +14,7 @@ import {
   getUserSpacesByUserIdController,
   startListningController,
 } from "./Controllers/Home.Controller.js";
+import { streamConversationStatusEvents } from "./Services/ConversationStatusEvents.service.js";
 import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
@@ -24,6 +25,11 @@ router.post("/create-space", createSpaceController);
 router.post("/delete-space", requireAuth, deleteSpaceController);
 router.get("/getuserspaces", getUserSpacesByUserIdController);
 router.get("/getUserActiveSpace", getUserActiveSpaceController);
+router.get(
+  "/conversation-status-events",
+  requireAuth,
+  streamConversationStatusEvents,
+);
 router.get("/getSpaceStats", getSpaceStatsController);
 router.get("/getProfileSummary", getProfileSummaryController);
 router.get("/getNoteWorkspaces", getNoteWorkspacesController);
