@@ -35,8 +35,32 @@ const idCandidates = (value: string) => {
   return [value];
 };
 
-const getDocumentId = (document: Record<string, unknown>, key: string) =>
-  document[key] ? String(document[key]) : "";
+const identityClause = (fields: string[], value: string) => ({
+  $or: fields.map(field => ({
+    [field]: {
+      $in: idCandidates(value),
+    },
+  })),
+});
+
+const getDocumentId = (
+  document: Record<string, unknown>,
+  ...keys: string[]
+) => {
+  for (const key of keys) {
+    if (document[key]) {
+      return String(document[key]);
+    }
+  }
+
+  return "";
+};
+
+const activeStatusClause = () => ({
+  status: {
+    $nin: [...TERMINAL_STATUSES],
+  },
+});
 
 const eventSignature = (event: StatusEvent) =>
   [
@@ -57,8 +81,8 @@ const buildConversationEvent = (
   document: Record<string, unknown>,
 ): StatusEvent => ({
   eventType: "conversation.status.changed",
-  userId: getDocumentId(document, "userId"),
-  spaceId: getDocumentId(document, "spaceId"),
+  userId: getDocumentId(document, "userId", "user_id"),
+  spaceId: getDocumentId(document, "spaceId", "space_id"),
   conversationId: getDocumentId(document, "_id"),
   status: document.status ? String(document.status) : undefined,
   updatedAt: document.updatedAt,
@@ -68,9 +92,9 @@ const buildExtractionRunEvent = (
   document: Record<string, unknown>,
 ): StatusEvent => ({
   eventType: "extraction_run.status.changed",
-  userId: getDocumentId(document, "userId"),
-  spaceId: getDocumentId(document, "spaceId"),
-  conversationId: getDocumentId(document, "conversationId"),
+  userId: getDocumentId(document, "userId", "user_id"),
+  spaceId: getDocumentId(document, "spaceId", "space_id"),
+  conversationId: getDocumentId(document, "conversationId", "conversation_id"),
   extractionRunId: getDocumentId(document, "_id"),
   extractionRunStatus: document.status ? String(document.status) : undefined,
   updatedAt: document.updatedAt,
@@ -82,6 +106,7 @@ export const streamConversationStatusEvents = (
 ) => {
   const authUserId = req.authUser?.id || req.session?.user?.id;
   const requestedUserId = String(req.query.userId || "");
+  const requestedSpaceId = String(req.query.spaceId || "").trim();
 
   if (!authUserId) {
     res.status(401).json({ success: false, message: "Unauthorized" });
@@ -90,6 +115,14 @@ export const streamConversationStatusEvents = (
 
   if (requestedUserId && requestedUserId !== authUserId) {
     res.status(403).json({ success: false, message: "Forbidden" });
+    return;
+  }
+
+  if (requestedSpaceId && !mongoose.isValidObjectId(requestedSpaceId)) {
+    res.status(400).json({
+      success: false,
+      message: "Invalid 'spaceId' query parameter.",
+    });
     return;
   }
 
@@ -107,7 +140,7 @@ export const streamConversationStatusEvents = (
     res.write(": keep-alive\n\n");
   }, 15000);
 
-  const emitChangedEvent = (event: StatusEvent, emitInitial: boolean) => {
+  const emitChangedEvent = (event: StatusEvent) => {
     if (!event.spaceId) {
       return;
     }
@@ -122,7 +155,7 @@ export const streamConversationStatusEvents = (
 
     seenEvents.set(key, signature);
 
-    if (!previousSignature && !emitInitial && isTerminalEvent(event)) {
+    if (!previousSignature && isTerminalEvent(event)) {
       return;
     }
 
@@ -139,21 +172,30 @@ export const streamConversationStatusEvents = (
     isPolling = true;
 
     try {
-      const query = {
-        userId: {
-          $in: idCandidates(authUserId),
-        },
-      };
+      const queryClauses: Record<string, unknown>[] = [
+        identityClause(["userId", "user_id"], authUserId),
+      ];
+
+      if (requestedSpaceId) {
+        queryClauses.push(
+          identityClause(["spaceId", "space_id"], requestedSpaceId),
+        );
+      }
+
+      const baseQuery = { $and: queryClauses };
+      const statusQuery = emitInitial
+        ? { $and: [...queryClauses, activeStatusClause()] }
+        : baseQuery;
       const [conversations, extractionRuns] = await Promise.all([
         mongoose.connection
           .collection("conversations")
-          .find(query)
+          .find(statusQuery)
           .sort({ updatedAt: -1, _id: -1 })
           .limit(STATUS_LOOKBACK_LIMIT)
           .toArray(),
         mongoose.connection
           .collection("extraction_runs")
-          .find(query)
+          .find(statusQuery)
           .sort({ updatedAt: -1, _id: -1 })
           .limit(STATUS_LOOKBACK_LIMIT)
           .toArray(),
@@ -162,14 +204,12 @@ export const streamConversationStatusEvents = (
       conversations.forEach(document => {
         emitChangedEvent(
           buildConversationEvent(document as Record<string, unknown>),
-          emitInitial,
         );
       });
 
       extractionRuns.forEach(document => {
         emitChangedEvent(
           buildExtractionRunEvent(document as Record<string, unknown>),
-          emitInitial,
         );
       });
     } catch (error) {
