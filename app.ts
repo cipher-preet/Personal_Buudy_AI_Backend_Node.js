@@ -9,6 +9,7 @@ import authRoutes from "./Authentication/Routes.js";
 import homeRoutes from "./Buddy/Routes.js";
 import planRoutes from "./Plans/Routes.js";
 import paymentRoutes from "./Payments/Routes.js";
+import adminRoutes from "./Admin/Routes.js";
 import { razorpayWebhookController } from "./Payments/Controllers/Payment.Controller.js";
 
 // Set the DNS server to use for resolving hostnames
@@ -23,7 +24,12 @@ app.use(
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "x-admin-key",
+    ],
   }),
 );
 
@@ -45,6 +51,7 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/home", homeRoutes);
 app.use("/api/v1/plans", planRoutes);
 app.use("/api/v1/payments", paymentRoutes);
+app.use("/api/v1/admin", adminRoutes);
 
 app.get("/", (req, res) => {
   res.send("server is running");
