@@ -14,6 +14,92 @@ const createIdFilter = (id: string) => {
   };
 };
 
+const assertCanCreateInSpace = async (
+  userId: string,
+  spaceId: string,
+  resource: "notes" | "tasks",
+) => {
+  if (!mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(spaceId)) {
+    return {
+      ok: false as const,
+      status: STATUS_CODE.BAD_REQUEST,
+      message: "Invalid user or space.",
+    };
+  }
+
+  const [quota, space] = await Promise.all([
+    validatePlanLimit(userId, resource),
+    CreateSpace.exists({
+      _id: spaceId,
+      userId: createIdFilter(userId),
+      deletedAt: null,
+    }),
+  ]);
+
+  if (!quota.allowed) {
+    return {
+      ok: false as const,
+      status: quota.status,
+      message: quota.message,
+    };
+  }
+
+  if (!space) {
+    return {
+      ok: false as const,
+      status: STATUS_CODE.NOT_FOUND,
+      message: "Space not found.",
+    };
+  }
+
+  return { ok: true as const };
+};
+
+const toOwnedObjectId = (id: string) => new mongoose.Types.ObjectId(id);
+
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+const toDateFromKey = (dateKey?: string) => {
+  if (!dateKey || !DATE_KEY_PATTERN.test(dateKey)) {
+    return new Date();
+  }
+
+  return new Date(`${dateKey}T12:00:00.000Z`);
+};
+
+const mapStagedNoteCard = (note: Record<string, any>) => ({
+  id: String(note._id),
+  title: note.title ?? "",
+  bodyPreview:
+    typeof note.body === "string" ? note.body.trim().slice(0, 140) : "",
+  confidence: note.confidence ?? null,
+  createdAt: note.createdAt ?? null,
+  updatedAt: note.updatedAt ?? null,
+});
+
+const mapStagedTaskCard = (task: Record<string, any>) => {
+  const description =
+    typeof task.description === "string"
+      ? task.description
+      : typeof task.body === "string"
+        ? task.body
+        : "";
+
+  return {
+    id: String(task._id),
+    title: task.title ?? "",
+    body: description.trim(),
+    descriptionPreview: description.trim().slice(0, 140),
+    evidence: task.evidence ?? null,
+    operation: task.operation ?? task.status ?? null,
+    priority: task.priority ?? null,
+    dueDate: task.dueDate ?? null,
+    confidence: task.confidence ?? null,
+    createdAt: task.createdAt ?? null,
+    updatedAt: task.updatedAt ?? null,
+  };
+};
+
 export const createSpaceRepository = async (
   spacename: string,
   userId: string,
@@ -419,17 +505,7 @@ export const getStagedNotesBySpaceRepository = async (
     return {
       status: STATUS_CODE.OK,
       data: {
-        notes: results.map(note => ({
-          id: String(note._id),
-          title: note.title ?? "",
-          bodyPreview:
-            typeof note.body === "string"
-              ? note.body.trim().slice(0, 140)
-              : "",
-          confidence: note.confidence ?? null,
-          createdAt: note.createdAt ?? null,
-          updatedAt: note.updatedAt ?? null,
-        })),
+        notes: results.map(mapStagedNoteCard),
         nextCursor,
       },
     };
@@ -559,28 +635,7 @@ export const getStagedTasksBySpaceRepository = async (
     return {
       status: STATUS_CODE.OK,
       data: {
-        tasks: results.map(task => {
-          const description =
-            typeof task.description === "string"
-              ? task.description
-              : typeof task.body === "string"
-                ? task.body
-                : "";
-
-          return {
-            id: String(task._id),
-            title: task.title ?? "",
-            body: description.trim(),
-            descriptionPreview: description.trim().slice(0, 140),
-            evidence: task.evidence ?? null,
-            operation: task.operation ?? task.status ?? null,
-            priority: task.priority ?? null,
-            dueDate: task.dueDate ?? null,
-            confidence: task.confidence ?? null,
-            createdAt: task.createdAt ?? null,
-            updatedAt: task.updatedAt ?? null,
-          };
-        }),
+        tasks: results.map(mapStagedTaskCard),
         nextCursor,
       },
     };
@@ -621,6 +676,120 @@ export const deleteStagedTaskRepository = async (
       message: "Task deleted successfully.",
       data: {
         deletedTaskId: String(task._id),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const createStagedNoteRepository = async (
+  userId: string,
+  spaceId: string,
+  title: string,
+  body: string,
+  dateKey?: string,
+) => {
+  try {
+    const access = await assertCanCreateInSpace(userId, spaceId, "notes");
+
+    if (!access.ok) {
+      return {
+        status: access.status,
+        message: access.message,
+      };
+    }
+
+    const now = new Date();
+    const createdAt = toDateFromKey(dateKey);
+    const created = await StagedNotes.create({
+      title,
+      body,
+      confidence: 1,
+      evidence: [],
+      origin: "explicit",
+      source: "manual",
+      userId: toOwnedObjectId(userId),
+      spaceId: toOwnedObjectId(spaceId),
+      createdAt,
+      updatedAt: now,
+    });
+
+    if (!created) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Failed to create note.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.CREATED,
+      message: "Note created successfully.",
+      data: {
+        note: mapStagedNoteCard(created.toObject()),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const createStagedTaskRepository = async (
+  userId: string,
+  spaceId: string,
+  title: string,
+  description: string,
+  dateKey?: string,
+) => {
+  try {
+    const access = await assertCanCreateInSpace(userId, spaceId, "tasks");
+
+    if (!access.ok) {
+      return {
+        status: access.status,
+        message: access.message,
+      };
+    }
+
+    const now = new Date();
+    const dueDate = dateKey && DATE_KEY_PATTERN.test(dateKey) ? dateKey : null;
+    const created = await StagedTasks.create({
+      title,
+      body: description,
+      description,
+      operation: "CREATE",
+      status: "pending",
+      origin: "explicit",
+      source: "manual",
+      confidence: 1,
+      needsConfirmation: false,
+      evidence: [],
+      dueDate,
+      dueDateStatus: dueDate ? "resolved" : "none",
+      userId: toOwnedObjectId(userId),
+      spaceId: toOwnedObjectId(spaceId),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    if (!created) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Failed to create task.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.CREATED,
+      message: "Task created successfully.",
+      data: {
+        task: mapStagedTaskCard(created.toObject()),
       },
     };
   } catch (error) {

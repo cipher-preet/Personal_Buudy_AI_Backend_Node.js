@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "tsx watch index.ts",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "tsx --test Buddy/reminderSchedule/time.test.ts Buddy/reminderSchedule/delivery.test.ts Buddy/reminderSchedule/redisClient.test.ts",
+    "backfill:reminders": "tsx scripts/backfillReminderTriggers.ts"
   },
   "author": "Preet.",
   "license": "ISC",
@@ -21,6 +23,7 @@
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "google-auth-library": "^10.6.2",
+    "ioredis": "^5.11.1",
     "mongoose": "^9.6.2",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",

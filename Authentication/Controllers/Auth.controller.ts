@@ -14,6 +14,7 @@ import { normalizeIndianMobile, sendBlackSmsOtp } from "../../utils/sendSmsOtp.j
 import { uploadProfileImageToS3 } from "../../Config/s3.js";
 import { CreateSpace } from "../../Buddy/Modals/Home.Modal.js";
 import { StagedNotes, StagedTasks } from "../../Buddy/Modals/Staged.Modal.js";
+import { saveOptionalAuthDeviceToken } from "../../Buddy/Repository/DeviceToken.repository.js";
 
 const googleClient = new OAuth2Client();
 
@@ -260,6 +261,8 @@ const verifyOTPController = async (
         phone: normalizedPhone.e164Phone,
       });
 
+      await saveOptionalAuthDeviceToken(user._id.toString(), req.body);
+
       return SuccessResponse(
         res,
         STATUS_CODE.OK,
@@ -295,6 +298,8 @@ const verifyOTPController = async (
     await otpModal.deleteMany({
       email: email,
     });
+
+    await saveOptionalAuthDeviceToken(user._id.toString(), req.body);
 
     return SuccessResponse(res, STATUS_CODE.OK, buildAuthPayload(user, true));
   } catch (error) {
@@ -344,6 +349,8 @@ const loginController = async (
     }
 
     setAuthSession(req, user);
+
+    await saveOptionalAuthDeviceToken(user._id.toString(), req.body);
 
     return SuccessResponse(res, STATUS_CODE.OK, buildAuthPayload(user, false));
   } catch (error) {
@@ -419,6 +426,8 @@ const googleLoginController = async (
     }
 
     setAuthSession(req, user);
+
+    await saveOptionalAuthDeviceToken(user._id.toString(), req.body);
 
     return SuccessResponse(
       res,

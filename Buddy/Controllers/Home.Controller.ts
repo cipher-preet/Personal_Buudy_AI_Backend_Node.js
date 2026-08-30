@@ -1,8 +1,14 @@
-import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js";
+import {
+  ErrorResponse,
+  STATUS_CODE,
+  SuccessResponse,
+} from "../../Api/index.js";
 import { NextFunction, Request, Response } from "express";
 import type { CustomRequest } from "../../types/types.js";
 import {
   createSpaceService,
+  createStagedNoteServices,
+  createStagedTaskServices,
   deleteSpaceServices,
   deleteStagedNoteServices,
   deleteStagedTaskServices,
@@ -16,6 +22,7 @@ import {
   getUserSpacesByUserIdServices,
   startListningServices,
 } from "../Services/Home.services.js";
+import mongoose, { Model } from "mongoose";
 
 const createSpaceController = async (
   req: Request,
@@ -68,6 +75,42 @@ const createSpaceController = async (
 const getAuthenticatedUserId = (req: CustomRequest) =>
   req.authUser?.id || req.session?.user?.id;
 
+const TITLE_MAX_LENGTH = 80;
+const DESCRIPTION_MAX_LENGTH = 500;
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+const parseRequiredText = (
+  value: unknown,
+  fieldName: string,
+  maxLength: number,
+) => {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return { error: `${fieldName} is required.` };
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed.length > maxLength) {
+    return {
+      error: `${fieldName} must be at most ${maxLength} characters.`,
+    };
+  }
+
+  return { value: trimmed };
+};
+
+const parseOptionalDateKey = (value: unknown) => {
+  if (value == null || value === "") {
+    return { value: undefined as string | undefined };
+  }
+
+  if (typeof value !== "string" || !DATE_KEY_PATTERN.test(value.trim())) {
+    return { error: "Invalid 'date'. Use YYYY-MM-DD." };
+  }
+
+  return { value: value.trim() };
+};
+
 //--------------------------------------------------------------------------------
 
 const deleteSpaceController = async (
@@ -80,11 +123,7 @@ const deleteSpaceController = async (
     const userId = getAuthenticatedUserId(req);
 
     if (!userId) {
-      return ErrorResponse(
-        res,
-        STATUS_CODE.UNAUTHORIZED,
-        "Unauthorized",
-      );
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
     }
 
     if (!spaceId || typeof spaceId !== "string") {
@@ -181,7 +220,6 @@ const startListningController = async (
     const { spaceId, isListning } = req.body;
 
     const response = await startListningServices(spaceId, isListning);
-
 
     if (response.status === STATUS_CODE.BAD_REQUEST) {
       return ErrorResponse(res, response.status, response.message);
@@ -506,8 +544,177 @@ const deleteStagedTaskController = async (
 
 //--------------------------------------------------------------------------------
 
+const createStagedNoteController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const { spaceId, title, description, date } = req.body;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!spaceId || typeof spaceId !== "string" || !mongoose.isValidObjectId(spaceId)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'spaceId'.",
+      );
+    }
+
+    const parsedTitle = parseRequiredText(title, "Title", TITLE_MAX_LENGTH);
+    if (parsedTitle.error) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTitle.error);
+    }
+
+    const parsedDescription = parseRequiredText(
+      description,
+      "Description",
+      DESCRIPTION_MAX_LENGTH,
+    );
+    if (parsedDescription.error) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        parsedDescription.error,
+      );
+    }
+
+    const parsedDate = parseOptionalDateKey(date);
+    if (parsedDate.error) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedDate.error);
+    }
+
+    const response = await createStagedNoteServices(
+      String(userId),
+      spaceId.trim(),
+      parsedTitle.value!,
+      parsedDescription.value!,
+      parsedDate.value,
+    );
+
+    if (response.status !== STATUS_CODE.CREATED) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to create note.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, {
+      message: response.message,
+      note: response.data?.note,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const createStagedTaskController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const { spaceId, title, description, date } = req.body;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!spaceId || typeof spaceId !== "string" || !mongoose.isValidObjectId(spaceId)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'spaceId'.",
+      );
+    }
+
+    const parsedTitle = parseRequiredText(title, "Title", TITLE_MAX_LENGTH);
+    if (parsedTitle.error) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTitle.error);
+    }
+
+    const parsedDescription = parseRequiredText(
+      description,
+      "Description",
+      DESCRIPTION_MAX_LENGTH,
+    );
+    if (parsedDescription.error) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        parsedDescription.error,
+      );
+    }
+
+    const parsedDate = parseOptionalDateKey(date);
+    if (parsedDate.error) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedDate.error);
+    }
+
+    const response = await createStagedTaskServices(
+      String(userId),
+      spaceId.trim(),
+      parsedTitle.value!,
+      parsedDescription.value!,
+      parsedDate.value,
+    );
+
+    if (response.status !== STATUS_CODE.CREATED) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to create task.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, {
+      message: response.message,
+      task: response.data?.task,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const gettranscriptchunkcontroller = async (  req: CustomRequest,
+  res: Response,
+  next: NextFunction,) => {
+  try {
+
+    const { spaceId } = req.query;
+
+    console.log("Received spaceId:", spaceId);
+
+    const TranscriptChunk = await mongoose.model('transcript_chunks', new mongoose.Schema({}));
+    const data = await TranscriptChunk.find({ spaceId: new mongoose.Types.ObjectId(spaceId as any) }).select('rawText').lean().exec();
+
+    console.log("TranscriptChunk data:", data);
+
+
+    return SuccessResponse(res, STATUS_CODE.OK, data);
+
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 export {
   createSpaceController,
+  createStagedNoteController,
+  createStagedTaskController,
   deleteSpaceController,
   deleteStagedNoteController,
   deleteStagedTaskController,
@@ -520,4 +727,5 @@ export {
   getUserSpacesByUserIdController,
   getUserActiveSpaceController,
   startListningController,
+  gettranscriptchunkcontroller
 };

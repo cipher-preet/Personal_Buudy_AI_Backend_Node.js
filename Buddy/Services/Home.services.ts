@@ -1,5 +1,7 @@
 import {
   createSpaceRepository,
+  createStagedNoteRepository,
+  createStagedTaskRepository,
   deleteSpaceRepository,
   deleteStagedNoteRepository,
   deleteStagedTaskRepository,
@@ -204,6 +206,54 @@ export const deleteStagedTaskServices = async (
 ) => {
   try {
     const response = await deleteStagedTaskRepository(userId, taskId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const createStagedNoteServices = async (
+  userId: string,
+  spaceId: string,
+  title: string,
+  body: string,
+  dateKey?: string,
+) => {
+  try {
+    const response = await createStagedNoteRepository(
+      userId,
+      spaceId,
+      title,
+      body,
+      dateKey,
+    );
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const createStagedTaskServices = async (
+  userId: string,
+  spaceId: string,
+  title: string,
+  description: string,
+  dateKey?: string,
+) => {
+  try {
+    const response = await createStagedTaskRepository(
+      userId,
+      spaceId,
+      title,
+      description,
+      dateKey,
+    );
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
