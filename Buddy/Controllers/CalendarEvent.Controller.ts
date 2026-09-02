@@ -247,7 +247,11 @@ export const getCalendarEventsController = async (
       return SuccessResponse(res, response.status, response.data);
     }
 
-    return ErrorResponse(res, response.status, response.message);
+    return ErrorResponse(
+      res,
+      response.status,
+      "Unable to load calendar events.",
+    );
   } catch (error) {
     next(error);
   }

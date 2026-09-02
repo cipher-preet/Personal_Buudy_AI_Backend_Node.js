@@ -15,9 +15,10 @@ const reminderSchema = new mongoose.Schema(
     },
     description: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
       maxlength: 500,
+      default: "",
     },
     dateKey: {
       type: String,

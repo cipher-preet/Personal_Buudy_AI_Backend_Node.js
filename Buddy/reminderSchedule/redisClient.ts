@@ -1,4 +1,4 @@
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 
 import {
   describeReminderRedisUrl,
@@ -46,7 +46,7 @@ export const getReminderRedis = () => {
       enableReadyCheck: true,
       lazyConnect: true,
     });
-    client.on("error", (error) => {
+    client.on("error", (error: Error) => {
       console.log(
         JSON.stringify({
           event: "reminder_redis_error",

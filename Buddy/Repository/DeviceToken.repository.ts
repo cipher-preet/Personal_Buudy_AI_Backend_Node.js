@@ -25,17 +25,46 @@ export const upsertDeviceTokenRepository = async (
       };
     }
 
-    const saved = await DeviceToken.findOneAndUpdate(
-      { token },
-      {
-        $set: {
-          userId: new mongoose.Types.ObjectId(userId),
-          token,
-          platform,
+    const writeToken = async () =>
+      DeviceToken.findOneAndUpdate(
+        { token },
+        {
+          $set: {
+            userId: new mongoose.Types.ObjectId(userId),
+            token,
+            platform,
+          },
         },
-      },
-      { upsert: true, new: true },
-    );
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+
+    let saved;
+    try {
+      saved = await writeToken();
+    } catch (error: any) {
+      if (error?.code !== 11000) {
+        throw error;
+      }
+
+      saved = await DeviceToken.findOneAndUpdate(
+        { token },
+        {
+          $set: {
+            userId: new mongoose.Types.ObjectId(userId),
+            token,
+            platform,
+          },
+        },
+        { new: true },
+      );
+    }
+
+    if (!saved) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Unable to register device token.",
+      };
+    }
 
     return {
       status: STATUS_CODE.OK,
@@ -81,7 +110,7 @@ export const deleteDeviceTokenRepository = async (
   }
 };
 
-const DEVICE_TOKEN_BODY_KEYS = ["fcmToken", "deviceToken", "fcm_token"] as const;
+const DEVICE_TOKEN_BODY_KEYS = ["fcmToken", "deviceToken", "fcm_token", "token"] as const;
 const PLATFORMS = new Set(["android", "ios", "web"]);
 
 export const saveOptionalAuthDeviceToken = async (
@@ -102,6 +131,7 @@ export const saveOptionalAuthDeviceToken = async (
   }
 
   if (!token || token.length < 8 || token.length > 4096) {
+    console.log("optional auth device token skipped: missing or invalid fcm token");
     return;
   }
 

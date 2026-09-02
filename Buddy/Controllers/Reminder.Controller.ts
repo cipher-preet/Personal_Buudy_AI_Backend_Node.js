@@ -31,6 +31,30 @@ const SOURCE_FILTERS = new Set(["all", "ai", "manual"]);
 const getAuthenticatedUserId = (req: CustomRequest) =>
   req.authUser?.id || req.session?.user?.id;
 
+const parseOptionalText = (
+  value: unknown,
+  fieldName: string,
+  maxLength: number,
+) => {
+  if (value == null || value === "") {
+    return { value: "" };
+  }
+
+  if (typeof value !== "string") {
+    return { error: `${fieldName} must be text.` };
+  }
+
+  const trimmed = value.trim();
+
+  if (trimmed.length > maxLength) {
+    return {
+      error: `${fieldName} must be at most ${maxLength} characters.`,
+    };
+  }
+
+  return { value: trimmed };
+};
+
 const parseRequiredText = (
   value: unknown,
   fieldName: string,
@@ -73,7 +97,7 @@ const parseReminderPayload = (body: Record<string, unknown>) => {
     return { error: parsedTitle.error };
   }
 
-  const parsedDescription = parseRequiredText(
+  const parsedDescription = parseOptionalText(
     body.description,
     "Description",
     DESCRIPTION_MAX_LENGTH,
