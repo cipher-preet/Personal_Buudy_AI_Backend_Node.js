@@ -153,3 +153,78 @@ export const getDailyBriefingForUser = async (
     briefing: mapBriefing(document as Record<string, any>),
   };
 };
+
+/**
+ * TEMPORARY test helper: ask Python orchestration to regenerate a briefing now.
+ * Requires BUDDY_API_BASE (same base URL as the app buddyApiBase).
+ */
+export const forceGenerateDailyBriefingForUser = async (
+  userId: string,
+  options?: { date?: string; period?: "today" | "yesterday" },
+) => {
+  const buddyApiBase = process.env.BUDDY_API_BASE?.trim().replace(/\/$/, "");
+  if (!buddyApiBase) {
+    return {
+      status: 503 as const,
+      message:
+        "BUDDY_API_BASE is not configured on Node. Set it to the Python /api/v1 base URL.",
+    };
+  }
+
+  const period = options?.period === "yesterday" ? "yesterday" : "today";
+  const body: Record<string, string> = {
+    userId,
+    period,
+  };
+  if (options?.date) {
+    body.date = options.date;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180_000);
+
+  try {
+    const response = await fetch(`${buddyApiBase}/daily-briefing/force-generate`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const payload = (await response.json().catch(() => null)) as
+      | { success?: boolean; result?: unknown; detail?: string; message?: string }
+      | null;
+
+    if (!response.ok) {
+      const detail =
+        (typeof payload?.detail === "string" && payload.detail) ||
+        (typeof payload?.message === "string" && payload.message) ||
+        `Python force-generate failed (${response.status}).`;
+      return {
+        status: (response.status >= 400 && response.status < 600
+          ? response.status
+          : 502) as 400 | 403 | 404 | 500 | 502,
+        message: detail,
+      };
+    }
+
+    return {
+      status: 200 as const,
+      result: payload?.result ?? payload,
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error && error.name === "AbortError"
+        ? "Force generate timed out waiting for Python."
+        : error instanceof Error
+          ? error.message
+          : "Force generate failed.";
+    return { status: 502 as const, message };
+  } finally {
+    clearTimeout(timeout);
+  }
+};

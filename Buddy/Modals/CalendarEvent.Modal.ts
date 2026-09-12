@@ -65,6 +65,12 @@ const calendarEventSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    remindBeforeMinutes: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 1440,
+    },
     reminderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Reminder",

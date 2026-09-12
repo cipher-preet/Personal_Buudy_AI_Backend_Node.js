@@ -226,7 +226,7 @@ const startListningController = async (
       return ErrorResponse(
         res,
         response.status,
-        response.message,
+        response.message || "Unable to update listening state.",
         response.data,
       );
     }
@@ -613,7 +613,10 @@ const createStagedNoteController = async (
 
     return SuccessResponse(res, response.status, {
       message: response.message,
-      note: response.data?.note,
+      note:
+        response.data && "note" in response.data
+          ? response.data.note
+          : undefined,
     });
   } catch (error) {
     next(error);
@@ -685,7 +688,10 @@ const createStagedTaskController = async (
 
     return SuccessResponse(res, response.status, {
       message: response.message,
-      task: response.data?.task,
+      task:
+        response.data && "task" in response.data
+          ? response.data.task
+          : undefined,
     });
   } catch (error) {
     next(error);

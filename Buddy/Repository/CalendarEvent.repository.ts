@@ -6,11 +6,12 @@ import {
   cancelReminderSchedule,
   upsertReminderSchedule,
 } from "../reminderSchedule/schedule.js";
+import { shiftLocalDateTimeByMinutes } from "../reminderSchedule/time.js";
 
 const TONES = ["indigo", "violet", "cyan", "teal"] as const;
 const TIMELINE_PAD_HOURS = 2;
 const EVENT_CARD_FIELDS =
-  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping reminderId createdAt updatedAt";
+  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping remindBeforeMinutes reminderId createdAt updatedAt";
 
 const createIdFilter = (id: string) => {
   if (!mongoose.isValidObjectId(id)) {
@@ -36,6 +37,10 @@ const mapEventCard = (event: Record<string, any>) => ({
   aiCalling: Boolean(event.aiCalling),
   notification: event.notification !== false,
   beeping: Boolean(event.beeping),
+  remindBeforeMinutes: Math.max(
+    0,
+    Math.min(1440, Number(event.remindBeforeMinutes) || 0),
+  ),
   reminderId: event.reminderId ? String(event.reminderId) : null,
   createdAt: event.createdAt ?? null,
   updatedAt: event.updatedAt ?? null,
@@ -108,19 +113,64 @@ const buildDayWindows = (
   return windows;
 };
 
-const reminderPayloadFromEvent = (payload: CalendarEventWriteInput) => ({
-  title: payload.title,
-  description: payload.description || `Meeting: ${payload.title}`,
-  dateKey: payload.dateKey,
-  dateLabel: payload.dateLabel,
-  timeLabel: payload.startTimeLabel,
-  source: "manual" as const,
-  tone: "lavender",
-  repeat: "once",
-  aiCalling: payload.aiCalling,
-  notification: payload.notification,
-  beeping: payload.beeping,
-});
+const dateLabelFromDateKey = (dateKey: string, fallback: string) => {
+  const match = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return fallback;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (Number.isNaN(date.getTime())) {
+    return fallback;
+  }
+  return date.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+};
+
+const reminderPayloadFromEvent = (payload: CalendarEventWriteInput) => {
+  const beforeMinutes = Math.max(
+    0,
+    Math.min(1440, Number(payload.remindBeforeMinutes) || 0),
+  );
+  const trigger =
+    beforeMinutes > 0
+      ? shiftLocalDateTimeByMinutes(
+          payload.dateKey,
+          payload.startTimeLabel,
+          -beforeMinutes,
+        )
+      : null;
+
+  const reminderDateKey = trigger?.dateKey ?? payload.dateKey;
+  const reminderTimeLabel = trigger?.timeLabel ?? payload.startTimeLabel;
+
+  return {
+    title: payload.title,
+    description:
+      payload.description ||
+      (beforeMinutes > 0
+        ? `Meeting in ${beforeMinutes} min: ${payload.title}`
+        : `Meeting: ${payload.title}`),
+    dateKey: reminderDateKey,
+    dateLabel:
+      reminderDateKey === payload.dateKey
+        ? payload.dateLabel
+        : dateLabelFromDateKey(reminderDateKey, payload.dateLabel),
+    timeLabel: reminderTimeLabel,
+    source: "manual" as const,
+    tone: "lavender",
+    repeat: "once",
+    aiCalling: payload.aiCalling,
+    notification: payload.notification,
+    beeping: payload.beeping,
+  };
+};
 
 const syncLinkedReminder = async (
   userId: string,
@@ -143,7 +193,13 @@ const syncLinkedReminder = async (
     return null;
   }
 
-  const reminderBody = reminderPayloadFromEvent(payload);
+  // At least one delivery channel is required for the shared reminder pipeline.
+  const effectivePayload =
+    !payload.aiCalling && !payload.beeping && !payload.notification
+      ? { ...payload, notification: true }
+      : payload;
+
+  const reminderBody = reminderPayloadFromEvent(effectivePayload);
 
   if (reminderId && mongoose.isValidObjectId(reminderId)) {
     const existing = await Reminder.findOne({
@@ -226,6 +282,7 @@ export type CalendarEventWriteInput = {
   aiCalling: boolean;
   notification: boolean;
   beeping: boolean;
+  remindBeforeMinutes: number;
 };
 
 export const getCalendarEventsRepository = async (
@@ -292,6 +349,7 @@ export const createCalendarEventRepository = async (
       aiCalling: payload.aiCalling,
       notification: payload.notification,
       beeping: payload.beeping,
+      remindBeforeMinutes: payload.remindBeforeMinutes,
       reminderId,
     });
 
@@ -364,6 +422,7 @@ export const updateCalendarEventRepository = async (
           aiCalling: payload.aiCalling,
           notification: payload.notification,
           beeping: payload.beeping,
+          remindBeforeMinutes: payload.remindBeforeMinutes,
           reminderId,
         },
       },

@@ -105,6 +105,21 @@ const minutesFromTimeLabel = (label: string) => {
   return hour * 60 + minute;
 };
 
+const parseRemindBeforeMinutes = (value: unknown) => {
+  if (value == null || value === "") {
+    return { value: 0 };
+  }
+
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return { error: "'remindBeforeMinutes' must be a whole number." };
+  }
+  if (parsed < 0 || parsed > 1440) {
+    return { error: "'remindBeforeMinutes' must be between 0 and 1440." };
+  }
+  return { value: parsed };
+};
+
 const parseEventPayload = (body: Record<string, unknown>) => {
   const parsedTitle = parseRequiredText(body.title, "Title", TITLE_MAX_LENGTH);
   if (parsedTitle.error) {
@@ -187,6 +202,24 @@ const parseEventPayload = (body: Record<string, unknown>) => {
     return { error: parsedBeeping.error };
   }
 
+  const parsedRemindBefore = parseRemindBeforeMinutes(body.remindBeforeMinutes);
+  if (parsedRemindBefore.error) {
+    return { error: parsedRemindBefore.error };
+  }
+
+  let aiCalling = parsedAiCalling.value!;
+  let notification = parsedNotification.value!;
+  let beeping = parsedBeeping.value!;
+  const aiReminder = parsedAiReminder.value!;
+
+  if (aiReminder && !aiCalling && !notification && !beeping) {
+    notification = true;
+  }
+  if (!aiReminder) {
+    aiCalling = false;
+    beeping = false;
+  }
+
   const payload: CalendarEventWriteInput = {
     title: parsedTitle.value!,
     description: parsedDescription.value ?? "",
@@ -195,10 +228,11 @@ const parseEventPayload = (body: Record<string, unknown>) => {
     dateLabel: parsedDateLabel.value!,
     startTimeLabel: body.startTimeLabel.trim(),
     endTimeLabel: body.endTimeLabel.trim(),
-    aiReminder: parsedAiReminder.value!,
-    aiCalling: parsedAiCalling.value!,
-    notification: parsedNotification.value!,
-    beeping: parsedBeeping.value!,
+    aiReminder,
+    aiCalling,
+    notification,
+    beeping,
+    remindBeforeMinutes: aiReminder ? parsedRemindBefore.value! : 0,
   };
 
   return { payload };

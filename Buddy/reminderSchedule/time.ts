@@ -101,11 +101,35 @@ export const zonedLocalToUtc = (
   return new Date(intendedUtc - offset2);
 };
 
-export const occurrenceIdFor = (reminderId: string, occurrenceAtUtc: Date) =>
-  `${reminderId}:${toOccurrenceUtcKey(occurrenceAtUtc)}`;
+export const shiftLocalDateTimeByMinutes = (
+  dateKey: string,
+  timeLabel: string,
+  deltaMinutes: number,
+  timeZone = DEFAULT_REMINDER_TIMEZONE,
+): { dateKey: string; timeLabel: string } | null => {
+  const utc = zonedLocalToUtc(dateKey, timeLabel, timeZone);
+  if (!utc) {
+    return null;
+  }
+
+  const shifted = new Date(utc.getTime() + deltaMinutes * 60_000);
+  const parts = tzParts(shifted.getTime(), timeZone.trim() || DEFAULT_REMINDER_TIMEZONE);
+  if (!parts) {
+    return null;
+  }
+
+  const nextDateKey = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+  const hour12 = parts.hour % 12 === 0 ? 12 : parts.hour % 12;
+  const period = parts.hour >= 12 ? "PM" : "AM";
+  const nextTimeLabel = `${hour12}:${String(parts.minute).padStart(2, "0")} ${period}`;
+  return { dateKey: nextDateKey, timeLabel: nextTimeLabel };
+};
 
 export const toOccurrenceUtcKey = (occurrenceAtUtc: Date) =>
   occurrenceAtUtc.toISOString().replace(/\.\d{3}Z$/, "Z");
+
+export const occurrenceIdFor = (reminderId: string, occurrenceAtUtc: Date) =>
+  `${reminderId}:${toOccurrenceUtcKey(occurrenceAtUtc)}`;
 
 export const daysInMonth = (year: number, monthIndex: number) =>
   new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
