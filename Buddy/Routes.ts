@@ -34,6 +34,7 @@ import {
   updateCalendarEventController,
 } from "./Controllers/CalendarEvent.Controller.js";
 import { streamConversationStatusEvents } from "./Services/ConversationStatusEvents.service.js";
+import { getDailyBriefingController } from "./Controllers/DailyBriefing.Controller.js";
 import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
@@ -69,6 +70,7 @@ router.get("/getCalendarEvents", requireAuth, getCalendarEventsController);
 router.post("/create-calendar-event", requireAuth, createCalendarEventController);
 router.post("/update-calendar-event", requireAuth, updateCalendarEventController);
 router.post("/delete-calendar-event", requireAuth, deleteCalendarEventController);
+router.get("/getDailyBriefing", requireAuth, getDailyBriefingController);
 router.post("/startListning", startListningController);
 
 

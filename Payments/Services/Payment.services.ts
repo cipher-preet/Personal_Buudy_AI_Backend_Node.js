@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import { STATUS_CODE } from "../../Api/index.js";
-import { getPlanByCode, activatePlanForUser } from "../../Plans/Services/Plan.services.js";
-import type { PlanCode } from "../../Plans/Modals/Plan.modal.js";
+import { getPlanByCode, activatePlanForUser, getPlanChargeAmount } from "../../Plans/Services/Plan.services.js";
+import type { PlanCode, PlanInterval } from "../../Plans/Modals/Plan.modal.js";
 import Payment from "../Modals/Payment.modal.js";
 import {
   createRazorpayOrder,
@@ -39,12 +39,13 @@ type RazorpayWebhookPayload = {
   };
 };
 
-const makeReceipt = (userId: string, planCode: string) =>
-  `rcpt_${planCode}_${userId.slice(-8)}_${Date.now()}`;
+const makeReceipt = (userId: string, planCode: string, interval: string) =>
+  `rcpt_${planCode}_${interval}_${userId.slice(-8)}_${Date.now()}`;
 
 export const createPaymentOrderService = async (
   userId: string,
   planCode: PlanCode,
+  interval: Extract<PlanInterval, "monthly" | "quarterly"> = "monthly",
 ) => {
   if (!mongoose.isValidObjectId(userId)) {
     return {
@@ -63,7 +64,12 @@ export const createPaymentOrderService = async (
       };
     }
 
-    const subscription = await activatePlanForUser(userId, freePlan._id, "free");
+    const subscription = await activatePlanForUser(
+      userId,
+      freePlan._id,
+      "free",
+      "forever",
+    );
 
     return {
       status: STATUS_CODE.OK,
@@ -84,17 +90,27 @@ export const createPaymentOrderService = async (
     };
   }
 
-  const receipt = makeReceipt(userId, plan.code);
+  const amount = getPlanChargeAmount(plan, interval);
+
+  if (!amount) {
+    return {
+      status: STATUS_CODE.BAD_REQUEST,
+      message: "Selected billing cycle is not available for this plan.",
+    };
+  }
+
+  const receipt = makeReceipt(userId, plan.code, interval);
   let order: Record<string, any>;
 
   try {
     order = await createRazorpayOrder({
-      amount: plan.amount,
+      amount,
       currency: plan.currency,
       receipt,
       notes: {
         userId,
         planCode: plan.code,
+        interval,
       },
     });
   } catch (error: any) {
@@ -108,11 +124,12 @@ export const createPaymentOrderService = async (
     userId,
     planId: plan._id,
     planCode: plan.code,
-    amount: plan.amount,
+    amount,
     currency: plan.currency,
     status: "created",
     razorpayOrderId: order.id,
     receipt,
+    billingInterval: interval,
     rawOrder: order,
   });
 
@@ -121,9 +138,10 @@ export const createPaymentOrderService = async (
     data: {
       keyId: getRazorpayKeyId(),
       orderId: order.id,
-      amount: plan.amount,
+      amount,
       currency: plan.currency,
       plan,
+      interval,
       paymentId: payment._id,
       requiresPayment: true,
     },
@@ -136,12 +154,14 @@ export const createPaymentLinkService = async ({
   name,
   email,
   phone,
+  interval = "monthly",
 }: {
   userId: string;
   planCode: PlanCode;
   name?: string;
   email?: string;
   phone?: string;
+  interval?: Extract<PlanInterval, "monthly" | "quarterly">;
 }) => {
   if (!mongoose.isValidObjectId(userId)) {
     return {
@@ -159,14 +179,23 @@ export const createPaymentLinkService = async ({
     };
   }
 
-  const receipt = makeReceipt(userId, plan.code);
+  const amount = getPlanChargeAmount(plan, interval);
+
+  if (!amount) {
+    return {
+      status: STATUS_CODE.BAD_REQUEST,
+      message: "Selected billing cycle is not available for this plan.",
+    };
+  }
+
+  const receipt = makeReceipt(userId, plan.code, interval);
 
   try {
     const link = await createRazorpayPaymentLink({
-      amount: plan.amount,
+      amount,
       currency: plan.currency,
       reference_id: receipt,
-      description: `${plan.name} subscription`,
+      description: `${plan.name} ${interval} subscription`,
       customer: {
         name,
         email,
@@ -179,6 +208,7 @@ export const createPaymentLinkService = async ({
       notes: {
         userId,
         planCode: plan.code,
+        interval,
       },
     });
 
@@ -186,13 +216,14 @@ export const createPaymentLinkService = async ({
       userId,
       planId: plan._id,
       planCode: plan.code,
-      amount: plan.amount,
+      amount,
       currency: plan.currency,
       status: "created",
       razorpayOrderId: link.id,
       razorpayPaymentLinkId: link.id,
       razorpayPaymentLinkUrl: link.short_url,
       receipt,
+      billingInterval: interval,
       rawOrder: link,
     });
 
@@ -203,6 +234,7 @@ export const createPaymentLinkService = async ({
         paymentLinkId: link.id,
         paymentLinkUrl: link.short_url,
         plan,
+        interval,
         requiresPayment: true,
       },
     };
@@ -303,6 +335,7 @@ export const verifyPaymentService = async ({
     userId,
     payment.planId,
     payment.planCode as PlanCode,
+    payment.billingInterval || "monthly",
   );
 
   return {
@@ -353,6 +386,7 @@ export const handlePaymentWebhookService = async (
       String(payment.userId),
       payment.planId,
       payment.planCode as PlanCode,
+      payment.billingInterval || "monthly",
     );
   }
 

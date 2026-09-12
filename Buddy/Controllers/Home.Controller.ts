@@ -59,6 +59,7 @@ const createSpaceController = async (
         res,
         response.status,
         response.message || "Unable to create space.",
+        response.data,
       );
     }
 
@@ -221,8 +222,13 @@ const startListningController = async (
 
     const response = await startListningServices(spaceId, isListning);
 
-    if (response.status === STATUS_CODE.BAD_REQUEST) {
-      return ErrorResponse(res, response.status, response.message);
+    if (response.status === STATUS_CODE.BAD_REQUEST || response.status === STATUS_CODE.FORBIDDEN) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message,
+        response.data,
+      );
     }
 
     SuccessResponse(res, response.status, response);
@@ -601,6 +607,7 @@ const createStagedNoteController = async (
         res,
         response.status,
         response.message || "Unable to create note.",
+        response.data,
       );
     }
 
@@ -672,6 +679,7 @@ const createStagedTaskController = async (
         res,
         response.status,
         response.message || "Unable to create task.",
+        response.data,
       );
     }
 

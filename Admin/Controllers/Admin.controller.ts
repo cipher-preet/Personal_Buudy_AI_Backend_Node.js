@@ -218,7 +218,10 @@ export const getAdminOverviewController = async (
         { $group: { _id: "$currency", amount: { $sum: "$amount" } } },
       ]),
       UserSubscription.countDocuments({ status: "active" }),
-      UserSubscription.countDocuments({ status: "active", planCode: "pro" }),
+      UserSubscription.countDocuments({
+        status: "active",
+        planCode: { $in: ["pro", "business"] },
+      }),
       User.find({ createdAt: { $gte: startDate, $lte: endDate } })
         .select("name email phone provider avatar isVerified createdAt")
         .sort({ _id: -1 })
@@ -657,7 +660,18 @@ export const updateAdminPlanController = async (
   next: NextFunction,
 ) => {
   try {
-    const allowedFields = ["name", "description", "amount", "currency", "limits", "features", "isActive", "sortOrder"];
+    const allowedFields = [
+      "name",
+      "description",
+      "amount",
+      "quarterlyAmount",
+      "currency",
+      "limits",
+      "languages",
+      "features",
+      "isActive",
+      "sortOrder",
+    ];
     const update = Object.fromEntries(
       Object.entries(req.body).filter(([key]) => allowedFields.includes(key)),
     );

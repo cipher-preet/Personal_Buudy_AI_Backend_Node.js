@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { STATUS_CODE } from "../../Api/index.js";
-import { validatePlanLimit } from "../../Plans/Services/Plan.services.js";
+import { validatePlanLimit, beginListeningUsage, endListeningUsage } from "../../Plans/Services/Plan.services.js";
 import { CreateSpace } from "../Modals/Home.Modal.js";
 import { StagedNotes, StagedTasks } from "../Modals/Staged.Modal.js";
 
@@ -24,6 +24,7 @@ const assertCanCreateInSpace = async (
       ok: false as const,
       status: STATUS_CODE.BAD_REQUEST,
       message: "Invalid user or space.",
+      data: undefined,
     };
   }
 
@@ -41,6 +42,7 @@ const assertCanCreateInSpace = async (
       ok: false as const,
       status: quota.status,
       message: quota.message,
+      data: quota.data,
     };
   }
 
@@ -49,6 +51,7 @@ const assertCanCreateInSpace = async (
       ok: false as const,
       status: STATUS_CODE.NOT_FOUND,
       message: "Space not found.",
+      data: undefined,
     };
   }
 
@@ -111,6 +114,7 @@ export const createSpaceRepository = async (
       return {
         status: quota.status,
         message: quota.message,
+        data: quota.data,
       };
     }
 
@@ -185,6 +189,7 @@ export const getUserSpacesByUserIdRepository = async (
                 spaceId: {
                   $in: [...resultSpaceIds, ...resultSpaceIdStrings],
                 },
+                deletedAt: null,
               },
             },
             {
@@ -248,7 +253,36 @@ export const startListningRepository = async (
       };
     }
 
-    const response = await CreateSpace.findOneAndUpdate(
+    const response = await CreateSpace.findOne({
+      _id: spaceId,
+      deletedAt: null,
+    });
+
+    if (!response) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Error while selecting Space",
+      };
+    }
+
+    if (isListning) {
+      const quota = await beginListeningUsage(
+        String(response.userId),
+        String(response._id),
+      );
+
+      if (!quota.allowed) {
+        return {
+          status: quota.status,
+          message: quota.message,
+          data: quota.data,
+        };
+      }
+    } else if (response.userId) {
+      await endListeningUsage(String(response.userId));
+    }
+
+    const updated = await CreateSpace.findOneAndUpdate(
       {
         _id: spaceId,
         deletedAt: null,
@@ -256,12 +290,13 @@ export const startListningRepository = async (
       {
         $set: {
           isListning: isListning,
+          listeningStartedAt: isListning ? new Date() : null,
         },
       },
       { new: true },
     );
 
-    if (!response) {
+    if (!updated) {
       return {
         status: STATUS_CODE.BAD_REQUEST,
         message: "Error while selecting Space",
@@ -271,7 +306,8 @@ export const startListningRepository = async (
     return {
       status: STATUS_CODE.OK,
       message: isListning ? "Listning start now ..." : "Listning Stops",
-      isListning: response.isListning,
+      isListning: updated.isListning,
+      listeningStartedAt: updated.listeningStartedAt,
     };
   } catch (error) {
     console.log("error in Home repository Layer ", error);
@@ -303,9 +339,10 @@ export const deleteSpaceRepository = async (
         $set: {
           deletedAt: new Date(),
           isListning: false,
+          listeningStartedAt: null,
         },
       },
-      { new: true },
+      { new: false },
     );
 
     if (!response) {
@@ -313,6 +350,10 @@ export const deleteSpaceRepository = async (
         status: STATUS_CODE.NOT_FOUND,
         message: "Space not found.",
       };
+    }
+
+    if (response.isListning && response.userId) {
+      await endListeningUsage(String(response.userId));
     }
 
     return {
@@ -341,10 +382,17 @@ export const getSpaceStatsRepository = async (
     };
 
     const [notesCount, tasksCount, doneTasksCount] = await Promise.all([
-      StagedNotes.countDocuments(query),
-      StagedTasks.countDocuments(query),
+      StagedNotes.countDocuments({
+        ...query,
+        deletedAt: null,
+      }),
       StagedTasks.countDocuments({
         ...query,
+        deletedAt: null,
+      }),
+      StagedTasks.countDocuments({
+        ...query,
+        deletedAt: null,
         operation: "DONE",
       }),
     ]);
@@ -371,17 +419,37 @@ export const getSpaceStatsRepository = async (
 
 export const getProfileSummaryRepository = async (userId: string) => {
   try {
-    const query = {
+    const userFilter = {
       userId: createIdFilter(userId),
     };
 
-    const [notesCount, tasksCount, spacesCount] = await Promise.all([
-      StagedNotes.countDocuments(query),
-      StagedTasks.countDocuments(query),
-      CreateSpace.countDocuments({
-        userId: createIdFilter(userId),
-        deletedAt: null,
-      }),
+    const liveSpaces = await CreateSpace.find({
+      ...userFilter,
+      deletedAt: null,
+    })
+      .select("_id")
+      .lean();
+
+    const liveSpaceIds = liveSpaces.map(space => space._id);
+    const liveSpaceIdFilter = {
+      $in: [...liveSpaceIds, ...liveSpaceIds.map(spaceId => String(spaceId))],
+    };
+
+    const [notesCount, tasksCount] = await Promise.all([
+      liveSpaceIds.length
+        ? StagedNotes.countDocuments({
+            ...userFilter,
+            spaceId: liveSpaceIdFilter,
+            deletedAt: null,
+          })
+        : Promise.resolve(0),
+      liveSpaceIds.length
+        ? StagedTasks.countDocuments({
+            ...userFilter,
+            spaceId: liveSpaceIdFilter,
+            deletedAt: null,
+          })
+        : Promise.resolve(0),
     ]);
 
     return {
@@ -389,7 +457,7 @@ export const getProfileSummaryRepository = async (userId: string) => {
       data: {
         notesCount,
         tasksCount,
-        spacesCount,
+        spacesCount: liveSpaces.length,
       },
     };
   } catch (error) {
@@ -429,6 +497,7 @@ export const getNoteWorkspacesRepository = async (userId: string) => {
           spaceId: {
             $in: [...spaceIds, ...spaceIdStrings],
           },
+          deletedAt: null,
         },
       },
       {
@@ -475,6 +544,7 @@ export const getStagedNotesBySpaceRepository = async (
     const query: Record<string, any> = {
       userId: createIdFilter(userId),
       spaceId: createIdFilter(spaceId),
+      deletedAt: null,
     };
 
     if (cursor) {
@@ -605,6 +675,7 @@ export const getStagedTasksBySpaceRepository = async (
     const query: Record<string, any> = {
       userId: createIdFilter(userId),
       spaceId: createIdFilter(spaceId),
+      deletedAt: null,
     };
 
     if (cursor) {
@@ -700,6 +771,7 @@ export const createStagedNoteRepository = async (
       return {
         status: access.status,
         message: access.message,
+        data: access.data,
       };
     }
 
@@ -754,6 +826,7 @@ export const createStagedTaskRepository = async (
       return {
         status: access.status,
         message: access.message,
+        data: access.data,
       };
     }
 

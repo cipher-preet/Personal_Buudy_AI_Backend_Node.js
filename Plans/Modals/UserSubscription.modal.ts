@@ -1,14 +1,23 @@
 import mongoose, { Document } from "mongoose";
 import type { PlanCode } from "./Plan.modal.js";
 
+export interface IActiveListening {
+  spaceId?: mongoose.Types.ObjectId | string;
+  startedAt?: Date;
+  reportedMs?: number;
+}
+
 export interface IUserSubscription extends Document {
   userId: mongoose.Types.ObjectId;
   planId: mongoose.Types.ObjectId;
   planCode: PlanCode;
+  billingInterval?: "forever" | "monthly" | "quarterly";
   status: "active" | "expired" | "cancelled";
   currentPeriodStart?: Date;
   currentPeriodEnd?: Date;
   upgradedAt?: Date;
+  recordingMsUsed?: number;
+  activeListening?: IActiveListening;
 }
 
 const userSubscriptionSchema = new mongoose.Schema<IUserSubscription>(
@@ -27,9 +36,14 @@ const userSubscriptionSchema = new mongoose.Schema<IUserSubscription>(
     },
     planCode: {
       type: String,
-      enum: ["free", "pro"],
+      enum: ["free", "pro", "business"],
       required: true,
       index: true,
+    },
+    billingInterval: {
+      type: String,
+      enum: ["forever", "monthly", "quarterly"],
+      default: "forever",
     },
     status: {
       type: String,
@@ -40,15 +54,23 @@ const userSubscriptionSchema = new mongoose.Schema<IUserSubscription>(
     currentPeriodStart: Date,
     currentPeriodEnd: Date,
     upgradedAt: Date,
+    recordingMsUsed: { type: Number, default: 0, min: 0 },
+    activeListening: {
+      spaceId: { type: mongoose.Schema.Types.Mixed },
+      startedAt: Date,
+      reportedMs: { type: Number, default: 0, min: 0 },
+    },
   },
   { timestamps: true },
 );
 
-const UserSubscription =
-  mongoose.models.UserSubscription ||
-  mongoose.model<IUserSubscription>(
-    "UserSubscription",
-    userSubscriptionSchema,
-  );
+if (mongoose.models.UserSubscription) {
+  mongoose.deleteModel("UserSubscription");
+}
+
+const UserSubscription = mongoose.model<IUserSubscription>(
+  "UserSubscription",
+  userSubscriptionSchema,
+);
 
 export default UserSubscription;

@@ -1,6 +1,11 @@
 import { Response } from "express";
 import mongoose from "mongoose";
 import type { CustomRequest } from "../../types/types.js";
+import {
+  recordSseClose,
+  recordSseOpen,
+  recordSsePoll,
+} from "./sseDiagnostics.js";
 
 type StatusEvent = {
   eventType: string;
@@ -133,6 +138,7 @@ export const streamConversationStatusEvents = (
   res.flushHeaders?.();
 
   res.write(": connected\n\n");
+  recordSseOpen();
 
   const seenEvents = new Map<string, string>();
   let isPolling = false;
@@ -170,6 +176,7 @@ export const streamConversationStatusEvents = (
     }
 
     isPolling = true;
+    const pollStarted = Date.now();
 
     try {
       const queryClauses: Record<string, unknown>[] = [
@@ -220,6 +227,7 @@ export const streamConversationStatusEvents = (
         })}\n\n`,
       );
     } finally {
+      recordSsePoll(Date.now() - pollStarted);
       isPolling = false;
     }
   };
@@ -237,5 +245,6 @@ export const streamConversationStatusEvents = (
   req.on("close", () => {
     clearInterval(keepAliveTimer);
     clearInterval(pollTimer);
+    recordSseClose();
   });
 };

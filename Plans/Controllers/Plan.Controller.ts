@@ -90,7 +90,7 @@ export const validatePlanLimitController = async (
 
     if (
       !userId ||
-      !["spaces", "notes", "tasks"].includes(String(resource))
+      !["spaces", "notes", "tasks", "recordingHours"].includes(String(resource))
     ) {
       return ErrorResponse(
         res,
@@ -105,7 +105,7 @@ export const validatePlanLimitController = async (
 
     const response = await validatePlanLimit(
       String(userId),
-      resource,
+      resource as "spaces" | "notes" | "tasks" | "recordingHours",
       Number(nextCount) || 1,
     );
 
@@ -114,6 +114,7 @@ export const validatePlanLimitController = async (
         res,
         response.status,
         response.message || "Plan limit reached.",
+        response.data,
       );
     }
 

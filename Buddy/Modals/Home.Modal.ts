@@ -18,6 +18,10 @@ const createSpaceSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    listeningStartedAt: {
+      type: Date,
+      default: null,
+    },
     deletedAt: {
       type: Date,
       default: null,

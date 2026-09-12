@@ -10,6 +10,7 @@ export interface IUser extends Document {
   provider: "email" | "google" | "phone";
   avatar?: string;
   isVerified: boolean;
+  timezone?: string;
   onboarding?: {
     profession?: string;
     usageGoal?: string;
@@ -53,6 +54,11 @@ const userSchema = new mongoose.Schema<IUser>(
     isVerified: {
       type: Boolean,
       default: false,
+    },
+
+    timezone: {
+      type: String,
+      trim: true,
     },
 
     onboarding: {

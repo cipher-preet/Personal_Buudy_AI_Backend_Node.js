@@ -19,6 +19,7 @@ export interface IPayment extends Document {
   razorpayPaymentId?: string;
   razorpaySignature?: string;
   receipt: string;
+  billingInterval?: "monthly" | "quarterly";
   rawOrder?: Record<string, unknown>;
   rawPayment?: Record<string, unknown>;
   webhookEvents: string[];
@@ -84,6 +85,10 @@ const paymentSchema = new mongoose.Schema<IPayment>(
       required: true,
       unique: true,
     },
+    billingInterval: {
+      type: String,
+      enum: ["monthly", "quarterly"],
+    },
     rawOrder: {
       type: mongoose.Schema.Types.Mixed,
     },
@@ -100,7 +105,10 @@ const paymentSchema = new mongoose.Schema<IPayment>(
   { timestamps: true },
 );
 
-const Payment =
-  mongoose.models.Payment || mongoose.model<IPayment>("Payment", paymentSchema);
+if (mongoose.models.Payment) {
+  mongoose.deleteModel("Payment");
+}
+
+const Payment = mongoose.model<IPayment>("Payment", paymentSchema);
 
 export default Payment;

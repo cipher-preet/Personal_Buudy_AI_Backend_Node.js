@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js";
 import type { CustomRequest } from "../../types/types.js";
+import { isPlanCode } from "../../Plans/Modals/Plan.modal.js";
 import {
   createPaymentLinkService,
   createPaymentOrderService,
@@ -9,14 +10,18 @@ import {
 } from "../Services/Payment.services.js";
 import { verifyWebhookSignature } from "../utils/razorpay.js";
 
+const parseBillingInterval = (value: unknown) =>
+  value === "quarterly" ? "quarterly" : "monthly";
+
 export const createPaymentOrderController = async (
   req: CustomRequest,
   res: Response,
   next: NextFunction,
 ) => {
   try {
-    const { userId, planCode } = req.body;
+    const { userId, planCode, interval } = req.body;
     const authUserId = req.authUser?.id || req.session?.user?.id;
+    const selectedPlanCode = String(planCode);
 
     if (!userId || !planCode) {
       return ErrorResponse(
@@ -26,13 +31,22 @@ export const createPaymentOrderController = async (
       );
     }
 
+    if (!isPlanCode(selectedPlanCode)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Selected plan is not available.",
+      );
+    }
+
     if (!authUserId || String(authUserId) !== String(userId)) {
       return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
     }
 
     const response = await createPaymentOrderService(
       String(userId),
-      String(planCode) === "free" ? "free" : "pro",
+      selectedPlanCode,
+      parseBillingInterval(interval),
     );
 
     if (!response.data) {
@@ -99,8 +113,9 @@ export const createPaymentLinkController = async (
   next: NextFunction,
 ) => {
   try {
-    const { userId, planCode, name, email, phone } = req.body;
+    const { userId, planCode, name, email, phone, interval } = req.body;
     const authUserId = req.authUser?.id || req.session?.user?.id;
+    const selectedPlanCode = String(planCode);
 
     if (!userId || !planCode) {
       return ErrorResponse(
@@ -110,16 +125,25 @@ export const createPaymentLinkController = async (
       );
     }
 
+    if (!isPlanCode(selectedPlanCode)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Selected plan is not available.",
+      );
+    }
+
     if (!authUserId || String(authUserId) !== String(userId)) {
       return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
     }
 
     const response = await createPaymentLinkService({
       userId: String(userId),
-      planCode: String(planCode) === "free" ? "free" : "pro",
+      planCode: selectedPlanCode,
       name: typeof name === "string" ? name : undefined,
       email: typeof email === "string" ? email : undefined,
       phone: phone ? String(phone) : undefined,
+      interval: parseBillingInterval(interval),
     });
 
     if (!response.data) {
