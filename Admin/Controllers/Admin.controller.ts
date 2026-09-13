@@ -4,6 +4,8 @@ import { ErrorResponse, STATUS_CODE, SuccessResponse } from "../../Api/index.js"
 import User from "../../Authentication/Modals/user.modal.js";
 import { CreateSpace } from "../../Buddy/Modals/Home.Modal.js";
 import { StagedNotes, StagedTasks } from "../../Buddy/Modals/Staged.Modal.js";
+import { Feedback } from "../../Buddy/Modals/Feedback.Modal.js";
+import { SupportTicket } from "../../Buddy/Modals/SupportTicket.Modal.js";
 import Plan from "../../Plans/Modals/Plan.modal.js";
 import UserSubscription from "../../Plans/Modals/UserSubscription.modal.js";
 import Payment from "../../Payments/Modals/Payment.modal.js";
@@ -360,6 +362,8 @@ export const getAdminUsersController = async (
     const { page, limit, skip } = pageOptions(req);
     const search = safeRegex(req.query.search);
     const query: Record<string, any> = {};
+    const listenerFilter =
+      typeof req.query.listener === "string" ? req.query.listener : "all";
 
     if (search) {
       query.$or = [{ name: search }, { email: search }];
@@ -374,6 +378,27 @@ export const getAdminUsersController = async (
 
     if (req.query.verified === "true" || req.query.verified === "false") {
       query.isVerified = req.query.verified === "true";
+    }
+
+    if (listenerFilter === "active" || listenerFilter === "none") {
+      const activeListenerUsers = await CreateSpace.aggregate([
+        {
+          $match: {
+            deletedAt: null,
+            isListning: true,
+          },
+        },
+        { $group: { _id: "$userId" } },
+      ]);
+      const activeListenerIds = activeListenerUsers
+        .map(item => item._id)
+        .filter(Boolean);
+
+      if (listenerFilter === "active") {
+        query._id = { $in: activeListenerIds.length ? activeListenerIds : [] };
+      } else if (activeListenerIds.length) {
+        query._id = { $nin: activeListenerIds };
+      }
     }
 
     const [total, users] = await Promise.all([
@@ -773,6 +798,248 @@ export const getAdminAiLayerController = async (
       })),
       failedTranscripts,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const SUPPORT_TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const;
+const FEEDBACK_STATUSES = ["open", "done"] as const;
+
+export const getAdminSupportTicketsController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { page, limit, skip } = pageOptions(req);
+    const search = safeRegex(req.query.search);
+    const rawSearch =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const query: Record<string, any> = {};
+
+    if (typeof req.query.status === "string" && req.query.status !== "all") {
+      query.status = req.query.status;
+    }
+
+    if (typeof req.query.categoryId === "string" && req.query.categoryId !== "all") {
+      query.categoryId = req.query.categoryId;
+    }
+
+    if (search) {
+      const ownerQuery: Record<string, any> = {
+        $or: [{ name: search }, { email: search }],
+      };
+
+      if (/^\d+$/.test(rawSearch)) {
+        ownerQuery.$or.push({ phone: Number(rawSearch) });
+      }
+
+      if (mongoose.isValidObjectId(rawSearch)) {
+        ownerQuery.$or.push({ _id: new mongoose.Types.ObjectId(rawSearch) });
+      }
+
+      const matchingOwners = await User.find(ownerQuery)
+        .select("_id")
+        .limit(500)
+        .lean();
+      const matchingOwnerIds = matchingOwners.map(owner => owner._id);
+
+      query.$or = [
+        { subject: search },
+        { message: search },
+        { contactEmail: search },
+        { contactName: search },
+        { categoryLabel: search },
+        ...(matchingOwnerIds.length > 0
+          ? [{ userId: { $in: matchingOwnerIds } }]
+          : []),
+      ];
+    }
+
+    const [total, tickets] = await Promise.all([
+      SupportTicket.countDocuments(query),
+      SupportTicket.find(query)
+        .populate("userId", "name email phone avatar")
+        .sort({ _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    return SuccessResponse(res, STATUS_CODE.OK, {
+      items: tickets.map(normalizeDocument),
+      pagination: buildPagination(total, page, limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminSupportTicketController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const status = String(req.body.status || "");
+
+    if (!SUPPORT_TICKET_STATUSES.includes(status as (typeof SUPPORT_TICKET_STATUSES)[number])) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, "Invalid support ticket status.");
+    }
+
+    const update: Record<string, unknown> = { status };
+
+    if (status === "resolved" || status === "closed") {
+      update.resolvedAt = new Date();
+    } else {
+      update.resolvedAt = null;
+    }
+
+    const ticket = await SupportTicket.findByIdAndUpdate(req.params.ticketId, update, {
+      new: true,
+    })
+      .populate("userId", "name email phone avatar")
+      .lean();
+
+    if (!ticket) {
+      return ErrorResponse(res, STATUS_CODE.NOT_FOUND, "Support ticket not found.");
+    }
+
+    return SuccessResponse(res, STATUS_CODE.OK, normalizeDocument(ticket));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAdminFeedbackController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { page, limit, skip } = pageOptions(req);
+    const search = safeRegex(req.query.search);
+    const rawSearch =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const query: Record<string, any> = {};
+
+    if (typeof req.query.status === "string" && req.query.status !== "all") {
+      if (req.query.status === "open") {
+        query.$and = [
+          ...(query.$and || []),
+          {
+            $or: [
+              { status: "open" },
+              { status: { $exists: false } },
+              { status: null },
+            ],
+          },
+        ];
+      } else {
+        query.status = req.query.status;
+      }
+    }
+
+    if (typeof req.query.topicId === "string" && req.query.topicId !== "all") {
+      query.topicId = req.query.topicId;
+    }
+
+    if (search) {
+      const ownerQuery: Record<string, any> = {
+        $or: [{ name: search }, { email: search }],
+      };
+
+      if (/^\d+$/.test(rawSearch)) {
+        ownerQuery.$or.push({ phone: Number(rawSearch) });
+      }
+
+      if (mongoose.isValidObjectId(rawSearch)) {
+        ownerQuery.$or.push({ _id: new mongoose.Types.ObjectId(rawSearch) });
+      }
+
+      const matchingOwners = await User.find(ownerQuery)
+        .select("_id")
+        .limit(500)
+        .lean();
+      const matchingOwnerIds = matchingOwners.map(owner => owner._id);
+
+      const searchClause = {
+        $or: [
+          { message: search },
+          { topicLabel: search },
+          { topicId: search },
+          ...(matchingOwnerIds.length > 0
+            ? [{ userId: { $in: matchingOwnerIds } }]
+            : []),
+        ],
+      };
+
+      query.$and = [...(query.$and || []), searchClause];
+    }
+
+    const [total, feedbackItems] = await Promise.all([
+      Feedback.countDocuments(query),
+      Feedback.find(query)
+        .populate("userId", "name email phone avatar")
+        .sort({ _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    return SuccessResponse(res, STATUS_CODE.OK, {
+      items: feedbackItems.map(item =>
+        normalizeDocument({
+          ...item,
+          status: item.status || "open",
+        }),
+      ),
+      pagination: buildPagination(total, page, limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminFeedbackController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const status = String(req.body.status || "");
+
+    if (!FEEDBACK_STATUSES.includes(status as (typeof FEEDBACK_STATUSES)[number])) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, "Invalid feedback status.");
+    }
+
+    const update: Record<string, unknown> = { status };
+
+    if (status === "done") {
+      update.resolvedAt = new Date();
+    } else {
+      update.resolvedAt = null;
+    }
+
+    const feedback = await Feedback.findByIdAndUpdate(req.params.feedbackId, update, {
+      new: true,
+    })
+      .populate("userId", "name email phone avatar")
+      .lean();
+
+    if (!feedback) {
+      return ErrorResponse(res, STATUS_CODE.NOT_FOUND, "Feedback not found.");
+    }
+
+    return SuccessResponse(
+      res,
+      STATUS_CODE.OK,
+      normalizeDocument({
+        ...feedback,
+        status: feedback.status || "open",
+      }),
+    );
   } catch (error) {
     next(error);
   }

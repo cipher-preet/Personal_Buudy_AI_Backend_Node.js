@@ -25,6 +25,7 @@ export const createFeedbackRepository = async (
       topicId: payload.topicId,
       topicLabel: payload.topicLabel,
       message: payload.message,
+      status: "open",
     });
 
     if (!created) {

@@ -26,6 +26,16 @@ const feedbackSchema = new mongoose.Schema(
       trim: true,
       maxlength: 1200,
     },
+    status: {
+      type: String,
+      enum: ["open", "done"],
+      default: "open",
+      index: true,
+    },
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -34,6 +44,7 @@ const feedbackSchema = new mongoose.Schema(
 );
 
 feedbackSchema.index({ userId: 1, createdAt: -1 });
+feedbackSchema.index({ status: 1, createdAt: -1 });
 
 const Feedback =
   mongoose.models.Feedback || mongoose.model("Feedback", feedbackSchema);

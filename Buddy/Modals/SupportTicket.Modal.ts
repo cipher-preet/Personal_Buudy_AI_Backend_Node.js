@@ -50,6 +50,10 @@ const supportTicketSchema = new mongoose.Schema(
       default: "open",
       index: true,
     },
+    resolvedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
