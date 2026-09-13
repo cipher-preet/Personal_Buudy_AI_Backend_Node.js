@@ -59,7 +59,7 @@ const calendarEventSchema = new mongoose.Schema(
     },
     notification: {
       type: Boolean,
-      default: true,
+      default: false,
     },
     beeping: {
       type: Boolean,

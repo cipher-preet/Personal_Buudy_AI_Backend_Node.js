@@ -55,11 +55,11 @@ const reminderSchema = new mongoose.Schema(
     },
     notification: {
       type: Boolean,
-      default: true,
+      default: false,
     },
     beeping: {
       type: Boolean,
-      default: false,
+      default: true,
     },
     lastTriggerAtUtc: {
       type: Date,

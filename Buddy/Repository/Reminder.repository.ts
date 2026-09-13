@@ -6,10 +6,19 @@ import {
   upsertReminderSchedule,
 } from "../reminderSchedule/schedule.js";
 import { logReminderEvent } from "../reminderSchedule/log.js";
+import {
+  reminderScheduleConfig,
+  DEFAULT_REMINDER_TIMEZONE,
+} from "../reminderSchedule/constants.js";
+import {
+  dateKeyInTimeZone,
+  isReminderExpired,
+  zonedLocalToUtc,
+} from "../reminderSchedule/time.js";
 
 const TONES = ["rose", "lavender", "ochre", "teal"] as const;
 const REMINDER_CARD_FIELDS =
-  "title description dateKey dateLabel timeLabel source tone repeat aiCalling notification beeping createdAt updatedAt";
+  "title description dateKey dateLabel timeLabel source tone repeat aiCalling notification beeping timezone deliveryStatus nextTriggerAtUtc createdAt updatedAt";
 
 const createIdFilter = (id: string) => {
   if (!mongoose.isValidObjectId(id)) {
@@ -34,46 +43,103 @@ const startOfWeekSunday = (dateKey: string) => {
   return date.toISOString().slice(0, 10);
 };
 
-const buildDateKeyFilter = (dateFilter?: string, anchorDate?: string) => {
+const dayBoundsUtc = (dateKey: string, timeZone = DEFAULT_REMINDER_TIMEZONE) => {
+  const start = zonedLocalToUtc(dateKey, "12:00 AM", timeZone);
+  const end = zonedLocalToUtc(addDaysToDateKey(dateKey, 1), "12:00 AM", timeZone);
+  if (!start || !end) {
+    return null;
+  }
+  return { start, end };
+};
+
+/** Match stored dateKey or next fire day for still-active repeating reminders. */
+const buildDateMatchFilter = (dateFilter?: string, anchorDate?: string) => {
   if (!dateFilter || dateFilter === "all" || !anchorDate) {
     return undefined;
   }
 
-  if (dateFilter === "today") {
-    return anchorDate;
-  }
-
-  if (dateFilter === "tomorrow") {
-    return addDaysToDateKey(anchorDate, 1);
+  if (dateFilter === "today" || dateFilter === "tomorrow") {
+    const target =
+      dateFilter === "today" ? anchorDate : addDaysToDateKey(anchorDate, 1);
+    const bounds = dayBoundsUtc(target);
+    const clauses: Record<string, unknown>[] = [{ dateKey: target }];
+    if (bounds) {
+      clauses.push({
+        repeat: { $ne: "once" },
+        nextTriggerAtUtc: { $gte: bounds.start, $lt: bounds.end },
+      });
+    }
+    return { $or: clauses };
   }
 
   if (dateFilter === "week") {
-    const start = startOfWeekSunday(anchorDate);
-    return {
-      $gte: start,
-      $lte: addDaysToDateKey(start, 6),
-    };
+    const startKey = startOfWeekSunday(anchorDate);
+    const endKey = addDaysToDateKey(startKey, 6);
+    const startBounds = dayBoundsUtc(startKey);
+    const endBounds = dayBoundsUtc(addDaysToDateKey(endKey, 1));
+    const clauses: Record<string, unknown>[] = [
+      { dateKey: { $gte: startKey, $lte: endKey } },
+    ];
+    if (startBounds && endBounds) {
+      clauses.push({
+        repeat: { $ne: "once" },
+        nextTriggerAtUtc: { $gte: startBounds.start, $lt: endBounds.start },
+      });
+    }
+    return { $or: clauses };
   }
 
   return undefined;
 };
 
-const mapReminderCard = (reminder: Record<string, any>) => ({
-  id: String(reminder._id),
-  title: reminder.title ?? "",
-  description: reminder.description ?? "",
-  dateKey: reminder.dateKey ?? "",
-  dateLabel: reminder.dateLabel ?? "",
-  timeLabel: reminder.timeLabel ?? "",
-  source: reminder.source === "ai" ? "ai" : "manual",
-  tone: reminder.tone ?? "lavender",
-  repeat: reminder.repeat ?? "once",
-  aiCalling: Boolean(reminder.aiCalling),
-  notification: reminder.notification !== false,
-  beeping: Boolean(reminder.beeping),
-  createdAt: reminder.createdAt ?? null,
-  updatedAt: reminder.updatedAt ?? null,
-});
+const mapReminderCard = (reminder: Record<string, any>) => {
+  const repeat = reminder.repeat ?? "once";
+  const timeZone = reminder.timezone || DEFAULT_REMINDER_TIMEZONE;
+  const nextTriggerAtUtc = reminder.nextTriggerAtUtc
+    ? new Date(reminder.nextTriggerAtUtc)
+    : null;
+  const nextDateKey =
+    nextTriggerAtUtc && !Number.isNaN(nextTriggerAtUtc.getTime())
+      ? dateKeyInTimeZone(nextTriggerAtUtc, timeZone)
+      : null;
+  const expired = isReminderExpired(
+    {
+      repeat,
+      dateKey: reminder.dateKey,
+      timeLabel: reminder.timeLabel,
+      timeZone,
+      deliveryStatus: reminder.deliveryStatus,
+      nextTriggerAtUtc,
+    },
+    new Date(),
+    reminderScheduleConfig.lateGraceSeconds,
+  );
+
+  return {
+    id: String(reminder._id),
+    title: reminder.title ?? "",
+    description: reminder.description ?? "",
+    dateKey: reminder.dateKey ?? "",
+    dateLabel: reminder.dateLabel ?? "",
+    timeLabel: reminder.timeLabel ?? "",
+    source: reminder.source === "ai" ? "ai" : "manual",
+    tone: reminder.tone ?? "lavender",
+    repeat,
+    aiCalling: Boolean(reminder.aiCalling),
+    notification: false,
+    beeping:
+      Boolean(reminder.beeping) ||
+      (!Boolean(reminder.aiCalling) && Boolean(reminder.notification)),
+    expired,
+    nextDateKey,
+    nextTriggerAtUtc:
+      nextTriggerAtUtc && !Number.isNaN(nextTriggerAtUtc.getTime())
+        ? nextTriggerAtUtc.toISOString()
+        : null,
+    createdAt: reminder.createdAt ?? null,
+    updatedAt: reminder.updatedAt ?? null,
+  };
+};
 
 const pickTone = () => TONES[Date.now() % TONES.length];
 
@@ -141,9 +207,9 @@ export const getRemindersRepository = async (
       query.source = source;
     }
 
-    const dateKeyFilter = buildDateKeyFilter(dateFilter, anchorDate);
-    if (dateKeyFilter) {
-      query.dateKey = dateKeyFilter;
+    const dateMatch = buildDateMatchFilter(dateFilter, anchorDate);
+    if (dateMatch) {
+      Object.assign(query, dateMatch);
     }
 
     if (cursor) {
@@ -171,10 +237,14 @@ export const getRemindersRepository = async (
         ? String(results[results.length - 1]._id)
         : null;
 
+    const cards = results
+      .map(mapReminderCard)
+      .sort((left, right) => Number(left.expired) - Number(right.expired));
+
     return {
       status: STATUS_CODE.OK,
       data: {
-        reminders: results.map(mapReminderCard),
+        reminders: cards,
         nextCursor,
       },
     };

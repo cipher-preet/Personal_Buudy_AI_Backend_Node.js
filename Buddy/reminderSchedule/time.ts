@@ -131,6 +131,65 @@ export const toOccurrenceUtcKey = (occurrenceAtUtc: Date) =>
 export const occurrenceIdFor = (reminderId: string, occurrenceAtUtc: Date) =>
   `${reminderId}:${toOccurrenceUtcKey(occurrenceAtUtc)}`;
 
+/** Local calendar date (YYYY-MM-DD) for an instant in the reminder timezone. */
+export const dateKeyInTimeZone = (
+  instant: Date,
+  timeZone = DEFAULT_REMINDER_TIMEZONE,
+): string | null => {
+  const parts = tzParts(
+    instant.getTime(),
+    timeZone.trim() || DEFAULT_REMINDER_TIMEZONE,
+  );
+  if (!parts) {
+    return null;
+  }
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+};
+
+/**
+ * One-time reminders whose fire time has passed are expired.
+ * Any repeating reminder stays active (alive) even if the original dateKey is old.
+ */
+export const isReminderExpired = (
+  input: {
+    repeat?: string | null;
+    dateKey?: string | null;
+    timeLabel?: string | null;
+    timeZone?: string | null;
+    deliveryStatus?: string | null;
+    nextTriggerAtUtc?: Date | string | null;
+  },
+  now = new Date(),
+  lateGraceSeconds = 300,
+): boolean => {
+  const repeat = String(input.repeat || "once").trim().toLowerCase();
+  if (repeat !== "once") {
+    return false;
+  }
+
+  const graceMs = Math.max(0, lateGraceSeconds) * 1000;
+  const cutoff = now.getTime() - graceMs;
+
+  if (input.nextTriggerAtUtc) {
+    const next = new Date(input.nextTriggerAtUtc);
+    if (!Number.isNaN(next.getTime())) {
+      return next.getTime() < cutoff;
+    }
+  }
+
+  const timeZone = input.timeZone?.trim() || DEFAULT_REMINDER_TIMEZONE;
+  const trigger = zonedLocalToUtc(
+    String(input.dateKey || ""),
+    String(input.timeLabel || ""),
+    timeZone,
+  );
+  if (!trigger) {
+    return false;
+  }
+
+  return trigger.getTime() < cutoff;
+};
+
 export const daysInMonth = (year: number, monthIndex: number) =>
   new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
 

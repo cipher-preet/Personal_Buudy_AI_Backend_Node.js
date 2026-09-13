@@ -1,4 +1,5 @@
 export const DELIVERY_TYPES = [
+  // Kept for legacy scheduled rows; new writes only use alarm or AI call.
   "NORMAL_NOTIFICATION",
   "ALARM_NOTIFICATION",
   "AI_CALL",

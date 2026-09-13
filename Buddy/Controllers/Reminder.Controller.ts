@@ -13,6 +13,7 @@ import {
   updateReminderServices,
 } from "../Services/Reminder.services.js";
 import type { ReminderWriteInput } from "../Repository/Reminder.repository.js";
+import { normalizeDeliveryFlags } from "../reminderSchedule/delivery.js";
 
 const TITLE_MAX_LENGTH = 80;
 const DESCRIPTION_MAX_LENGTH = 500;
@@ -83,7 +84,15 @@ const parseDateKey = (value: unknown, fieldName = "date") => {
   return { value: value.trim() };
 };
 
-const parseBoolean = (value: unknown, fieldName: string) => {
+const parseBoolean = (
+  value: unknown,
+  fieldName: string,
+  fallback?: boolean,
+) => {
+  if (value == null && typeof fallback === "boolean") {
+    return { value: fallback };
+  }
+
   if (typeof value !== "boolean") {
     return { error: `'${fieldName}' must be a boolean.` };
   }
@@ -138,15 +147,21 @@ const parseReminderPayload = (body: Record<string, unknown>) => {
     return { error: parsedAiCalling.error };
   }
 
-  const parsedNotification = parseBoolean(body.notification, "notification");
+  const parsedNotification = parseBoolean(body.notification, "notification", false);
   if (parsedNotification.error) {
     return { error: parsedNotification.error };
   }
 
-    const parsedBeeping = parseBoolean(body.beeping, "beeping");
+    const parsedBeeping = parseBoolean(body.beeping, "beeping", true);
     if (parsedBeeping.error) {
       return { error: parsedBeeping.error };
     }
+
+    const deliveryFlags = normalizeDeliveryFlags({
+      aiCalling: parsedAiCalling.value!,
+      beeping: parsedBeeping.value!,
+      notification: parsedNotification.value!,
+    });
 
     const sourceRaw =
       typeof body.source === "string" ? body.source.trim().toLowerCase() : "manual";
@@ -171,9 +186,9 @@ const parseReminderPayload = (body: Record<string, unknown>) => {
       dateLabel: parsedDateLabel.value!,
       timeLabel: body.timeLabel.trim(),
       repeat,
-      aiCalling: parsedAiCalling.value!,
-      notification: parsedNotification.value!,
-      beeping: parsedBeeping.value!,
+      aiCalling: deliveryFlags.aiCalling,
+      notification: deliveryFlags.notification,
+      beeping: deliveryFlags.beeping,
       source: sourceRaw,
       timeZone: timeZoneRaw || undefined,
     };

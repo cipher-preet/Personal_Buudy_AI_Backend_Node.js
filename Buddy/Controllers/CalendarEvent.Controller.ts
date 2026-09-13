@@ -13,6 +13,7 @@ import {
   updateCalendarEventServices,
 } from "../Services/CalendarEvent.services.js";
 import type { CalendarEventWriteInput } from "../Repository/CalendarEvent.repository.js";
+import { normalizeDeliveryFlags } from "../reminderSchedule/delivery.js";
 
 const TITLE_MAX_LENGTH = 80;
 const DESCRIPTION_MAX_LENGTH = 500;
@@ -191,7 +192,7 @@ const parseEventPayload = (body: Record<string, unknown>) => {
   const parsedNotification = parseBoolean(
     body.notification,
     "notification",
-    true,
+    false,
   );
   if (parsedNotification.error) {
     return { error: parsedNotification.error };
@@ -207,17 +208,24 @@ const parseEventPayload = (body: Record<string, unknown>) => {
     return { error: parsedRemindBefore.error };
   }
 
-  let aiCalling = parsedAiCalling.value!;
-  let notification = parsedNotification.value!;
-  let beeping = parsedBeeping.value!;
   const aiReminder = parsedAiReminder.value!;
+  let aiCalling = parsedAiCalling.value!;
+  let beeping = parsedBeeping.value!;
+  let notification = parsedNotification.value!;
 
-  if (aiReminder && !aiCalling && !notification && !beeping) {
-    notification = true;
-  }
   if (!aiReminder) {
     aiCalling = false;
     beeping = false;
+    notification = false;
+  } else {
+    const deliveryFlags = normalizeDeliveryFlags({
+      aiCalling,
+      beeping,
+      notification,
+    });
+    aiCalling = deliveryFlags.aiCalling;
+    beeping = deliveryFlags.beeping;
+    notification = deliveryFlags.notification;
   }
 
   const payload: CalendarEventWriteInput = {

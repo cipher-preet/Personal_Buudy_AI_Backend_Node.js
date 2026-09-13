@@ -35,8 +35,12 @@ const mapEventCard = (event: Record<string, any>) => ({
   tone: TONES.includes(event.tone) ? event.tone : "indigo",
   aiReminder: Boolean(event.aiReminder),
   aiCalling: Boolean(event.aiCalling),
-  notification: event.notification !== false,
-  beeping: Boolean(event.beeping),
+  notification: false,
+  beeping:
+    Boolean(event.beeping) ||
+    (Boolean(event.aiReminder) &&
+      !Boolean(event.aiCalling) &&
+      Boolean(event.notification)),
   remindBeforeMinutes: Math.max(
     0,
     Math.min(1440, Number(event.remindBeforeMinutes) || 0),
@@ -195,9 +199,9 @@ const syncLinkedReminder = async (
 
   // At least one delivery channel is required for the shared reminder pipeline.
   const effectivePayload =
-    !payload.aiCalling && !payload.beeping && !payload.notification
-      ? { ...payload, notification: true }
-      : payload;
+    !payload.aiCalling && !payload.beeping
+      ? { ...payload, beeping: true, notification: false }
+      : { ...payload, notification: false };
 
   const reminderBody = reminderPayloadFromEvent(effectivePayload);
 

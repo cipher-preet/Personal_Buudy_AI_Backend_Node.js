@@ -35,6 +35,8 @@ import {
 } from "./Controllers/CalendarEvent.Controller.js";
 import { streamConversationStatusEvents } from "./Services/ConversationStatusEvents.service.js";
 import { getDailyBriefingController, forceGenerateDailyBriefingController } from "./Controllers/DailyBriefing.Controller.js";
+import { submitFeedbackController } from "./Controllers/Feedback.Controller.js";
+import { raiseSupportTicketController } from "./Controllers/SupportTicket.Controller.js";
 import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
@@ -75,6 +77,12 @@ router.post(
   "/forceGenerateDailyBriefing",
   requireAuth,
   forceGenerateDailyBriefingController,
+);
+router.post("/submit-feedback", requireAuth, submitFeedbackController);
+router.post(
+  "/raise-support-ticket",
+  requireAuth,
+  raiseSupportTicketController,
 );
 router.post("/startListning", startListningController);
 

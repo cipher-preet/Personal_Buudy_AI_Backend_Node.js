@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { deliveryTypeFromFlags } from "./delivery.js";
+import { deliveryTypeFromFlags, normalizeDeliveryFlags } from "./delivery.js";
 
 describe("deliveryTypeFromFlags", () => {
   it("prefers AI_CALL", () => {
@@ -26,14 +26,14 @@ describe("deliveryTypeFromFlags", () => {
     );
   });
 
-  it("uses NORMAL_NOTIFICATION when only notification is on", () => {
+  it("maps legacy notification-only to ALARM_NOTIFICATION", () => {
     assert.equal(
       deliveryTypeFromFlags({
         aiCalling: false,
         beeping: false,
         notification: true,
       }),
-      "NORMAL_NOTIFICATION",
+      "ALARM_NOTIFICATION",
     );
   });
 
@@ -45,6 +45,30 @@ describe("deliveryTypeFromFlags", () => {
         notification: false,
       }),
       null,
+    );
+  });
+});
+
+describe("normalizeDeliveryFlags", () => {
+  it("forces notification false and defaults to beeping", () => {
+    assert.deepEqual(
+      normalizeDeliveryFlags({
+        aiCalling: false,
+        beeping: false,
+        notification: true,
+      }),
+      { aiCalling: false, beeping: true, notification: false },
+    );
+  });
+
+  it("keeps buddy call without forcing beeping", () => {
+    assert.deepEqual(
+      normalizeDeliveryFlags({
+        aiCalling: true,
+        beeping: false,
+        notification: false,
+      }),
+      { aiCalling: true, beeping: false, notification: false },
     );
   });
 });
