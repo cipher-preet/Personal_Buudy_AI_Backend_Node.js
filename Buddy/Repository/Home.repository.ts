@@ -70,15 +70,19 @@ const toDateFromKey = (dateKey?: string) => {
   return new Date(`${dateKey}T12:00:00.000Z`);
 };
 
-const mapStagedNoteCard = (note: Record<string, any>) => ({
-  id: String(note._id),
-  title: note.title ?? "",
-  bodyPreview:
-    typeof note.body === "string" ? note.body.trim().slice(0, 140) : "",
-  confidence: note.confidence ?? null,
-  createdAt: note.createdAt ?? null,
-  updatedAt: note.updatedAt ?? null,
-});
+const mapStagedNoteCard = (note: Record<string, any>) => {
+  const body = typeof note.body === "string" ? note.body.trim() : "";
+
+  return {
+    id: String(note._id),
+    title: note.title ?? "",
+    body,
+    bodyPreview: body.slice(0, 140),
+    confidence: note.confidence ?? null,
+    createdAt: note.createdAt ?? null,
+    updatedAt: note.updatedAt ?? null,
+  };
+};
 
 const mapStagedTaskCard = (task: Record<string, any>) => {
   const description =

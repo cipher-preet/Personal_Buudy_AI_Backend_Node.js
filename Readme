@@ -16,7 +16,7 @@ docker push asia-south1-docker.pkg.dev/python-microservice-hub/buddy-backend-rep
 
 After the push succeeds, run:
 
-deploy.bat
+deploy.bat  
 
 So your regular deployment process in Google Cloud SDK Shell is simply:
 

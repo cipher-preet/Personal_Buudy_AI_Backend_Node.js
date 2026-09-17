@@ -33,6 +33,7 @@ import {
   getCalendarEventsController,
   updateCalendarEventController,
 } from "./Controllers/CalendarEvent.Controller.js";
+import { getCalendarFeedController } from "./Controllers/CalendarFeed.Controller.js";
 import { streamConversationStatusEvents } from "./Services/ConversationStatusEvents.service.js";
 import { getDailyBriefingController, forceGenerateDailyBriefingController } from "./Controllers/DailyBriefing.Controller.js";
 import { submitFeedbackController } from "./Controllers/Feedback.Controller.js";
@@ -69,6 +70,7 @@ router.post("/delete-reminder", requireAuth, deleteReminderController);
 router.post("/register-device-token", requireAuth, registerDeviceTokenController);
 router.post("/unregister-device-token", requireAuth, unregisterDeviceTokenController);
 router.get("/getCalendarEvents", requireAuth, getCalendarEventsController);
+router.get("/getCalendarFeed", requireAuth, getCalendarFeedController);
 router.post("/create-calendar-event", requireAuth, createCalendarEventController);
 router.post("/update-calendar-event", requireAuth, updateCalendarEventController);
 router.post("/delete-calendar-event", requireAuth, deleteCalendarEventController);
