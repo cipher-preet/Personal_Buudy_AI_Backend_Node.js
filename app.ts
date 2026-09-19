@@ -10,6 +10,7 @@ import homeRoutes from "./Buddy/Routes.js";
 import planRoutes from "./Plans/Routes.js";
 import paymentRoutes from "./Payments/Routes.js";
 import adminRoutes from "./Admin/Routes.js";
+import meetingRecordingRoutes from "./MeetingExtension/Routes.js";
 import { razorpayWebhookController } from "./Payments/Controllers/Payment.Controller.js";
 
 // Set the DNS server to use for resolving hostnames
@@ -52,6 +53,7 @@ app.use("/api/v1/home", homeRoutes);
 app.use("/api/v1/plans", planRoutes);
 app.use("/api/v1/payments", paymentRoutes);
 app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/meeting-recordings", meetingRecordingRoutes);
 
 app.get("/", (req, res) => {
   res.send("server is running");

@@ -8,13 +8,14 @@
     "dev": "tsx watch index.ts",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "start": "node dist/index.js",
-    "test": "tsx --test Buddy/reminderSchedule/time.test.ts Buddy/reminderSchedule/delivery.test.ts Buddy/reminderSchedule/redisClient.test.ts Buddy/Repository/DailyBriefing.repository.test.ts Buddy/Services/sseDiagnostics.test.ts",
+    "test": "tsx --test Buddy/reminderSchedule/time.test.ts Buddy/reminderSchedule/delivery.test.ts Buddy/reminderSchedule/redisClient.test.ts Buddy/Repository/DailyBriefing.repository.test.ts Buddy/Services/sseDiagnostics.test.ts MeetingExtension/validation.test.ts MeetingExtension/s3Keys.test.ts MeetingExtension/state.test.ts MeetingExtension/Services/MeetingRecording.services.test.ts MeetingExtension/Repository/MeetingChunk.repository.test.ts",
     "backfill:reminders": "tsx scripts/backfillReminderTriggers.ts"
   },
   "author": "Preet.",
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
+    "@aws-sdk/s3-request-presigner": "^3.1104.0",
     "bcryptjs": "^3.0.3",
     "connect-mongo": "^6.0.0",
     "cookie-parser": "^1.4.7",

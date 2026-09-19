@@ -8,6 +8,8 @@ import app from "./app.js";
 import { seedDefaultPlans } from "./Plans/Services/Plan.services.js";
 import { connectReminderRedis } from "./Buddy/reminderSchedule/redisClient.js";
 import { startSseHealthLogger } from "./Buddy/Services/sseDiagnostics.js";
+import { isMeetingExtensionEnabled } from "./MeetingExtension/config.js";
+import { startMeetingStaleScanner } from "./MeetingExtension/staleScanner.js";
 
 const PORT = Number(process.env.PORT) || 5000;
 
@@ -17,6 +19,9 @@ const startServer = async () => {
     await seedDefaultPlans();
     await connectReminderRedis();
     startSseHealthLogger();
+    if (isMeetingExtensionEnabled()) {
+      startMeetingStaleScanner();
+    }
     setInterval(() => {
       console.log(
         JSON.stringify({
