@@ -9,6 +9,7 @@ import type { CustomRequest } from "../../types/types.js";
 import {
   createCalendarEventServices,
   deleteCalendarEventServices,
+  getCalendarEventDateMarkersServices,
   getCalendarEventsServices,
   updateCalendarEventServices,
 } from "../Services/CalendarEvent.services.js";
@@ -293,6 +294,60 @@ export const getCalendarEventsController = async (
       res,
       response.status,
       "Unable to load calendar events.",
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCalendarEventDateMarkersController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const fromDate =
+      typeof req.query.from === "string" ? req.query.from.trim() : "";
+    const toDate = typeof req.query.to === "string" ? req.query.to.trim() : "";
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    const parsedFrom = parseDateKey(fromDate, "from");
+    if (parsedFrom.error) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedFrom.error);
+    }
+
+    const parsedTo = parseDateKey(toDate, "to");
+    if (parsedTo.error) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTo.error);
+    }
+
+    if (parsedFrom.value! > parsedTo.value!) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "'from' must be on or before 'to'.",
+      );
+    }
+
+    const response = await getCalendarEventDateMarkersServices(
+      String(userId),
+      parsedFrom.value!,
+      parsedTo.value!,
+    );
+
+    if (response.data) {
+      return SuccessResponse(res, response.status, response.data);
+    }
+
+    return ErrorResponse(
+      res,
+      response.status,
+      (response as { message?: string }).message ||
+        "Unable to load calendar markers.",
     );
   } catch (error) {
     next(error);

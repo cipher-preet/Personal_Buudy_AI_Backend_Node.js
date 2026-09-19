@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 import { STATUS_CODE } from "../../Api/index.js";
 import { CreateSpace } from "../../Buddy/Modals/Home.Modal.js";
-import { StagedNotes, StagedTasks } from "../../Buddy/Modals/Staged.Modal.js";
 import Plan, { IPlan, PlanCode, PlanInterval } from "../Modals/Plan.modal.js";
 import UserSubscription from "../Modals/UserSubscription.modal.js";
 
@@ -236,20 +235,28 @@ export const getUsageForUser = async (userId: string) => {
     $in: [...liveSpaceIds, ...liveSpaceIds.map(spaceId => String(spaceId))],
   };
 
+  const notDeleted = {
+    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+  };
+
   const [notes, tasks, subscription] = await Promise.all([
     liveSpaceIds.length
-      ? StagedNotes.countDocuments({
-          ...userFilter,
-          spaceId: liveSpaceIdFilter,
-          deletedAt: null,
-        })
+      ? mongoose.connection
+          .collection("notes")
+          .countDocuments({
+            ...userFilter,
+            spaceId: liveSpaceIdFilter,
+            ...notDeleted,
+          })
       : Promise.resolve(0),
     liveSpaceIds.length
-      ? StagedTasks.countDocuments({
-          ...userFilter,
-          spaceId: liveSpaceIdFilter,
-          deletedAt: null,
-        })
+      ? mongoose.connection
+          .collection("tasks")
+          .countDocuments({
+            ...userFilter,
+            spaceId: liveSpaceIdFilter,
+            ...notDeleted,
+          })
       : Promise.resolve(0),
     UserSubscription.findOne({ userId }).select("recordingMsUsed").lean(),
   ]);

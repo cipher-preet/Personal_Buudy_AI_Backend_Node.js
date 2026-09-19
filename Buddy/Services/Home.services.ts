@@ -5,12 +5,14 @@ import {
   deleteSpaceRepository,
   deleteStagedNoteRepository,
   deleteStagedTaskRepository,
+  getNoteDateMarkersBySpaceRepository,
   getNoteWorkspacesRepository,
   getProfileSummaryRepository,
   getSpaceStatsRepository,
   getStagedNoteByIdRepository,
   getStagedNotesBySpaceRepository,
   getStagedTasksBySpaceRepository,
+  getTaskDateMarkersBySpaceRepository,
   getUserActiveSpaceRepository,
   getUserSpacesByUserIdRepository,
   startListningRepository,
@@ -134,6 +136,7 @@ export const getStagedNotesBySpaceServices = async (
   spaceId: string,
   limit?: number,
   cursor?: string,
+  dateKey?: string,
 ) => {
   try {
     const response = await getStagedNotesBySpaceRepository(
@@ -141,6 +144,7 @@ export const getStagedNotesBySpaceServices = async (
       spaceId,
       limit,
       cursor,
+      dateKey,
     );
     return response;
   } catch (error) {
@@ -183,6 +187,7 @@ export const getStagedTasksBySpaceServices = async (
   spaceId: string,
   limit?: number,
   cursor?: string,
+  dateKey?: string,
 ) => {
   try {
     const response = await getStagedTasksBySpaceRepository(
@@ -190,6 +195,7 @@ export const getStagedTasksBySpaceServices = async (
       spaceId,
       limit,
       cursor,
+      dateKey,
     );
     return response;
   } catch (error) {
@@ -255,6 +261,48 @@ export const createStagedTaskServices = async (
       dateKey,
     );
     return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getNoteDateMarkersBySpaceServices = async (
+  userId: string,
+  spaceId: string,
+  fromDate: string,
+  toDate: string,
+) => {
+  try {
+    return await getNoteDateMarkersBySpaceRepository(
+      userId,
+      spaceId,
+      fromDate,
+      toDate,
+    );
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getTaskDateMarkersBySpaceServices = async (
+  userId: string,
+  spaceId: string,
+  fromDate: string,
+  toDate: string,
+) => {
+  try {
+    return await getTaskDateMarkersBySpaceRepository(
+      userId,
+      spaceId,
+      fromDate,
+      toDate,
+    );
   } catch (error) {
     console.log("error in Home service Layer ", error);
     throw error;

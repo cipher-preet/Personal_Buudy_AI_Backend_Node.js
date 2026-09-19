@@ -1,6 +1,7 @@
 import {
   createCalendarEventRepository,
   deleteCalendarEventRepository,
+  getCalendarEventDateMarkersRepository,
   getCalendarEventsRepository,
   updateCalendarEventRepository,
   type CalendarEventWriteInput,
@@ -13,6 +14,23 @@ export const getCalendarEventsServices = async (
 ) => {
   try {
     return await getCalendarEventsRepository(userId, fromDate, toDate);
+  } catch (error) {
+    console.log("error in CalendarEvent service Layer ", error);
+    throw error;
+  }
+};
+
+export const getCalendarEventDateMarkersServices = async (
+  userId: string,
+  fromDate: string,
+  toDate: string,
+) => {
+  try {
+    return await getCalendarEventDateMarkersRepository(
+      userId,
+      fromDate,
+      toDate,
+    );
   } catch (error) {
     console.log("error in CalendarEvent service Layer ", error);
     throw error;

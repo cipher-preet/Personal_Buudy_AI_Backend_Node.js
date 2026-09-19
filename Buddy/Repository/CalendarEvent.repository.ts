@@ -317,6 +317,45 @@ export const getCalendarEventsRepository = async (
       data: {
         events: mapped,
         windows: buildDayWindows(mapped),
+        total: mapped.length,
+        ...(fromDate === toDate ? { date: fromDate } : {}),
+      },
+    };
+  } catch (error) {
+    console.log("error in CalendarEvent repository Layer ", error);
+    throw error;
+  }
+};
+
+export const getCalendarEventDateMarkersRepository = async (
+  userId: string,
+  fromDate: string,
+  toDate: string,
+) => {
+  try {
+    const rows = await CalendarEvent.aggregate([
+      {
+        $match: {
+          userId: createIdFilter(userId),
+          dateKey: { $gte: fromDate, $lte: toDate },
+        },
+      },
+      {
+        $group: {
+          _id: "$dateKey",
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        dates: rows
+          .map((row: { _id?: string }) => String(row._id ?? ""))
+          .filter((key: string) => /^\d{4}-\d{2}-\d{2}$/.test(key)),
+        from: fromDate,
+        to: toDate,
       },
     };
   } catch (error) {

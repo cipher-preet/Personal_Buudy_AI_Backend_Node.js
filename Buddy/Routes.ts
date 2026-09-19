@@ -6,12 +6,14 @@ import {
   deleteSpaceController,
   deleteStagedNoteController,
   deleteStagedTaskController,
+  getNoteDateMarkersBySpaceController,
   getNoteWorkspacesController,
   getProfileSummaryController,
   getSpaceStatsController,
   getStagedNoteByIdController,
   getStagedNotesBySpaceController,
   getStagedTasksBySpaceController,
+  getTaskDateMarkersBySpaceController,
   gettranscriptchunkcontroller,
   getUserActiveSpaceController,
   getUserSpacesByUserIdController,
@@ -30,6 +32,7 @@ import {
 import {
   createCalendarEventController,
   deleteCalendarEventController,
+  getCalendarEventDateMarkersController,
   getCalendarEventsController,
   updateCalendarEventController,
 } from "./Controllers/CalendarEvent.Controller.js";
@@ -57,10 +60,12 @@ router.get("/getSpaceStats", getSpaceStatsController);
 router.get("/getProfileSummary", getProfileSummaryController);
 router.get("/getNoteWorkspaces", getNoteWorkspacesController);
 router.get("/getStagedNotesBySpace", getStagedNotesBySpaceController);
+router.get("/getNoteDateMarkersBySpace", getNoteDateMarkersBySpaceController);
 router.get("/getStagedNoteById", getStagedNoteByIdController);
 router.post("/delete-staged-note", requireAuth, deleteStagedNoteController);
 router.post("/create-staged-note", requireAuth, createStagedNoteController);
 router.get("/getStagedTasksBySpace", getStagedTasksBySpaceController);
+router.get("/getTaskDateMarkersBySpace", getTaskDateMarkersBySpaceController);
 router.post("/delete-staged-task", requireAuth, deleteStagedTaskController);
 router.post("/create-staged-task", requireAuth, createStagedTaskController);
 router.get("/getReminders", requireAuth, getRemindersController);
@@ -70,6 +75,11 @@ router.post("/delete-reminder", requireAuth, deleteReminderController);
 router.post("/register-device-token", requireAuth, registerDeviceTokenController);
 router.post("/unregister-device-token", requireAuth, unregisterDeviceTokenController);
 router.get("/getCalendarEvents", requireAuth, getCalendarEventsController);
+router.get(
+  "/getCalendarEventDateMarkers",
+  requireAuth,
+  getCalendarEventDateMarkersController,
+);
 router.get("/getCalendarFeed", requireAuth, getCalendarFeedController);
 router.post("/create-calendar-event", requireAuth, createCalendarEventController);
 router.post("/update-calendar-event", requireAuth, updateCalendarEventController);
