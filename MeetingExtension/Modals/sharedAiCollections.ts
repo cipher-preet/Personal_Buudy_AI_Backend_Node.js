@@ -32,14 +32,14 @@ export const insertConversationForMeeting = async ({
 }: {
   conversationId: mongoose.Types.ObjectId;
   userId: mongoose.Types.ObjectId;
-  spaceId: mongoose.Types.ObjectId;
+  spaceId: mongoose.Types.ObjectId | null;
   startedAt: Date;
 }) => {
   const now = new Date();
   await aiCollections().conversations.insertOne({
     _id: conversationId,
     userId,
-    spaceId,
+    spaceId: spaceId ?? null,
     status: "RECORDING",
     sourceType: MEETING_SOURCE_TYPE,
     startedAt,
@@ -78,7 +78,7 @@ export const upsertPendingMediaRows = async ({
 }: {
   conversationId: mongoose.Types.ObjectId;
   userId: mongoose.Types.ObjectId;
-  spaceId: mongoose.Types.ObjectId;
+  spaceId: mongoose.Types.ObjectId | null;
   sequence: number;
   chunkId: string;
   s3Key: string;
@@ -91,13 +91,14 @@ export const upsertPendingMediaRows = async ({
 }) => {
   const now = new Date();
   const filePath = `s3://${bucket}/${s3Key}`;
+  const scopedSpaceId = spaceId ?? null;
   const audioResult = await aiCollections().audioChunks.updateOne(
     { conversationId, sequenceNumber: sequence },
     {
       $setOnInsert: {
         conversationId,
         userId,
-        spaceId,
+        spaceId: scopedSpaceId,
         chunkId,
         sequenceNumber: sequence,
         capturedAt: now,
@@ -133,7 +134,7 @@ export const upsertPendingMediaRows = async ({
       $setOnInsert: {
         conversationId,
         userId,
-        spaceId,
+        spaceId: scopedSpaceId,
         chunkId,
         sequenceNumber: sequence,
         rawText: null,
@@ -199,6 +200,75 @@ export const markConversationStopRequested = async ({
     },
   );
   return result.modifiedCount > 0 || result.matchedCount > 0;
+};
+
+/** Mark never-uploaded sequences as terminal so finalization can skip them. */
+export const markMissingUploadSequencesTerminal = async ({
+  conversationId,
+  userId,
+  spaceId,
+  missingSequences,
+}: {
+  conversationId: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;
+  spaceId: mongoose.Types.ObjectId | null;
+  missingSequences: number[];
+}) => {
+  if (!missingSequences.length) {
+    return 0;
+  }
+  const now = new Date();
+  const scopedSpaceId = spaceId ?? null;
+  let marked = 0;
+  for (const sequence of missingSequences) {
+    const chunkId = `meeting:${String(conversationId)}:missing:${sequence}`;
+    const result = await aiCollections().transcriptChunks.updateOne(
+      { conversationId, sequenceNumber: sequence },
+      {
+        $setOnInsert: {
+          conversationId,
+          userId,
+          spaceId: scopedSpaceId,
+          chunkId,
+          sequenceNumber: sequence,
+          rawText: null,
+          normalizedText: null,
+          languageCode: null,
+          sttProvider: "none",
+          sttRequestId: null,
+          sttStatus: "failed",
+          processingStatus: "processed",
+          startTimeMs: null,
+          endTimeMs: null,
+          audioFilePath: null,
+          jobId: chunkId,
+          sttAttempts: 0,
+          retryCount: 0,
+          lastError: "Chunk never uploaded before upload wait timeout.",
+          failureStage: "upload",
+          failureType: "MISSING_UPLOAD",
+          terminal: true,
+          archiveRef: null,
+          processingWindowId: null,
+          processedAt: now,
+          publishedAt: null,
+          exclusionReason: "sequence_missing",
+          sourceType: MEETING_SOURCE_TYPE,
+          source: MEETING_SOURCE_TYPE,
+          meetingSessionId: String(conversationId),
+          segments: [],
+          createdAt: now,
+          updatedAt: now,
+          expiresAt: null,
+        },
+      },
+      { upsert: true },
+    );
+    if (result.upsertedId || result.matchedCount > 0) {
+      marked += 1;
+    }
+  }
+  return marked;
 };
 
 export const getConversation = async (conversationId: string) => {

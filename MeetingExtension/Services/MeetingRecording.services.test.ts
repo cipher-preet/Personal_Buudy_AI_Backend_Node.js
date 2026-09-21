@@ -132,4 +132,14 @@ describe("meeting recording service contracts", () => {
     assert.equal(body.spaceId, undefined);
     assert.equal(Boolean(USER_A), true);
   });
+
+  it("treats extension meetings as 1-based for missing sequence checks", () => {
+    assert.deepEqual(missingSequences(1, [1]), []);
+    assert.deepEqual(missingSequences(3, [1, 3]), [2]);
+  });
+
+  it("detects the common missing-first-chunk gap from production", () => {
+    // STT ran for 2..8 while seq 1 never uploaded — the prior deadlock case.
+    assert.deepEqual(missingSequences(8, [2, 3, 4, 5, 6, 7, 8]), [1]);
+  });
 });

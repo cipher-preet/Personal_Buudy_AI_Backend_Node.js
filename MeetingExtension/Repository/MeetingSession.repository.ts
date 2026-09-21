@@ -2,8 +2,8 @@ import mongoose from "mongoose";
 
 import { CreateSpace } from "../../Buddy/Modals/Home.Modal.js";
 import { MeetingSession } from "../Modals/MeetingSession.Modal.js";
-import { DEFAULT_MEETINGS_SPACE_NAME } from "../constants.js";
-import type { MeetingStatus } from "../constants.js";
+import { DEFAULT_MEETINGS_SPACE_NAME, MeetingStatus } from "../constants.js";
+import type { MeetingStatus as MeetingStatusType } from "../constants.js";
 
 const userFilter = (userId: string) => {
   if (!mongoose.isValidObjectId(userId)) {
@@ -112,7 +112,7 @@ export const markStaleMeetings = async ({
   statuses,
 }: {
   cutoff: Date;
-  statuses: MeetingStatus[];
+  statuses: MeetingStatusType[];
 }) => {
   const result = await MeetingSession.updateMany(
     {
@@ -128,4 +128,24 @@ export const markStaleMeetings = async ({
     },
   );
   return result.modifiedCount;
+};
+
+/** Meetings waiting on late uploads past the post-STOP grace window. */
+export const findMeetingsNeedingUploadAdvance = async ({
+  cutoff,
+  limit = 25,
+}: {
+  cutoff: Date;
+  limit?: number;
+}) => {
+  return MeetingSession.find({
+    status: {
+      $in: [MeetingStatus.STOP_REQUESTED, MeetingStatus.WAITING_FOR_UPLOADS],
+    },
+    pipelineStopEnqueued: { $ne: true },
+    expectedFinalSequence: { $ne: null },
+    stopRequestedAt: { $ne: null, $lte: cutoff },
+  })
+    .sort({ stopRequestedAt: 1 })
+    .limit(limit);
 };

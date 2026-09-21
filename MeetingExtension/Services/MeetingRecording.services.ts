@@ -24,6 +24,7 @@ import {
   insertConversationForMeeting,
   listTranscriptChunks,
   markConversationStopRequested,
+  markMissingUploadSequencesTerminal,
   upsertPendingMediaRows,
 } from "../Modals/sharedAiCollections.js";
 import { buildEnvelope, publishMeetingEvent } from "../queue.js";
@@ -40,9 +41,10 @@ import {
   createMeetingSession,
   findMeetingByClientRequestId,
   findMeetingById,
+  findMeetingsNeedingUploadAdvance,
+  findOwnedSpace,
   listMeetingsForUser,
   markStaleMeetings,
-  resolveSpaceForMeetingUser,
 } from "../Repository/MeetingSession.repository.js";
 import { buildChunkId, buildFinalRecordingS3Key, buildMeetingChunkS3Key } from "../s3Keys.js";
 import { canAcceptUploads, missingSequences, toClientStatus } from "../state.js";
@@ -61,6 +63,13 @@ import {
   parseSequence,
   parseSizeBytes,
 } from "../validation.js";
+
+/** Extension meetings are unscoped; never serialize null as the string "null". */
+const spaceIdForEvent = (spaceId: unknown): string =>
+  spaceId ? String(spaceId) : "";
+
+const spaceIdForResponse = (spaceId: unknown): string | null =>
+  spaceId ? String(spaceId) : null;
 
 export type S3Port = {
   hasConfig: () => boolean;
@@ -147,16 +156,21 @@ export class MeetingRecordingService {
       );
     }
 
+    // Extension recordings are not tied to a Buddy space. Only honor an
+    // explicit owned spaceId if the client supplies one; otherwise keep null.
     const requestedSpaceId = parseOptionalObjectId(body.spaceId, "spaceId");
-    const space = await resolveSpaceForMeetingUser(ownerId, requestedSpaceId);
-    if (!space) {
-      throw new MeetingError(
-        MeetingErrorCode.MEETING_SPACE_NOT_FOUND,
-        "Space not found for this user.",
-        404,
-      );
+    let spaceObjectId: mongoose.Types.ObjectId | null = null;
+    if (requestedSpaceId) {
+      const space = await findOwnedSpace(ownerId, requestedSpaceId);
+      if (!space) {
+        throw new MeetingError(
+          MeetingErrorCode.MEETING_SPACE_NOT_FOUND,
+          "Space not found for this user.",
+          404,
+        );
+      }
+      spaceObjectId = new mongoose.Types.ObjectId(String(space._id));
     }
-    const spaceId = String(space._id);
 
     const clientRequestId = parseClientRequestId(body.clientRequestId);
     if (clientRequestId) {
@@ -172,7 +186,6 @@ export class MeetingRecordingService {
     const startedAt = parseIsoDate(body.startedAt, "startedAt");
     const meetingSessionId = new mongoose.Types.ObjectId();
     const userObjectId = new mongoose.Types.ObjectId(ownerId);
-    const spaceObjectId = new mongoose.Types.ObjectId(spaceId);
 
     await insertConversationForMeeting({
       conversationId: meetingSessionId,
@@ -446,7 +459,7 @@ export class MeetingRecordingService {
             eventId: `${chunkId}:ready`,
             eventType: "meeting.video.chunk.ready",
             userId: ownerId,
-            spaceId: String(meeting.spaceId),
+            spaceId: spaceIdForEvent(meeting.spaceId),
             conversationId: String(meeting._id),
             payload: {
               jobType: "meeting_video_chunk_ready",
@@ -456,7 +469,7 @@ export class MeetingRecordingService {
               sequenceNumber: sequence,
               mediaKind,
               userId: ownerId,
-              spaceId: String(meeting.spaceId),
+              spaceId: spaceIdForEvent(meeting.spaceId),
               s3Key: expectedKey,
               s3Bucket: bucket,
               startOffsetMs: timing.startOffsetMs,
@@ -636,8 +649,9 @@ export class MeetingRecordingService {
 
   async scanStaleSessions() {
     const config = getMeetingConfig();
+    const advanced = await this.scanUploadWaitTimeouts(config);
     const cutoff = new Date(Date.now() - config.staleAfterMinutes * 60_000);
-    return markStaleMeetings({
+    const interrupted = await markStaleMeetings({
       cutoff,
       statuses: [
         MeetingStatus.RECORDING,
@@ -645,6 +659,29 @@ export class MeetingRecordingService {
         MeetingStatus.WAITING_FOR_UPLOADS,
       ],
     });
+    return advanced + interrupted;
+  }
+
+  /** Advance meetings stuck in WAITING_FOR_UPLOADS after the post-STOP grace window. */
+  async scanUploadWaitTimeouts(config: ReturnType<typeof getMeetingConfig> = getMeetingConfig()) {
+    const cutoff = new Date(Date.now() - config.uploadWaitTimeoutSeconds * 1000);
+    const meetings = await findMeetingsNeedingUploadAdvance({ cutoff, limit: 25 });
+    let advanced = 0;
+    for (const meeting of meetings) {
+      try {
+        await this.maybeAdvanceAfterUploads(meeting, config);
+        advanced += 1;
+      } catch (error) {
+        logMeetingEvent("meeting_upload_timeout_advance_failed", {
+          meetingSessionId: String(meeting._id),
+          message: error instanceof Error ? error.message : "advance failed",
+        });
+      }
+    }
+    if (advanced > 0) {
+      logMeetingEvent("meeting_upload_timeout_advanced", { count: advanced });
+    }
+    return advanced;
   }
 
   private assertSequenceAllowed(meeting: { expectedFinalSequence?: number | null; status: string }, sequence: number) {
@@ -658,6 +695,17 @@ export class MeetingRecordingService {
         400,
       );
     }
+  }
+
+  private uploadsTimedOut(
+    stopRequestedAt: Date | string | null | undefined,
+    config: ReturnType<typeof getMeetingConfig>,
+  ) {
+    const stoppedAt = stopRequestedAt ? new Date(stopRequestedAt).getTime() : NaN;
+    if (!Number.isFinite(stoppedAt)) {
+      return false;
+    }
+    return Date.now() - stoppedAt >= config.uploadWaitTimeoutSeconds * 1000;
   }
 
   private async maybeAdvanceAfterUploads(
@@ -688,44 +736,77 @@ export class MeetingRecordingService {
       (row: { mediaKind?: string | null }) =>
         kindOf(row) === MeetingMediaKind.AUDIO || kindOf(row) === MeetingMediaKind.VIDEO,
     );
+    const timedOut = this.uploadsTimedOut(meeting.stopRequestedAt, config);
+    const hasAnyAudio = audioSeqs.length > 0;
+    const hasAnyVideo = videoSeqs.length > 0;
+    // After STOP grace window, proceed with whatever chunks arrived so intelligence
+    // is not blocked forever by a permanently missing early chunk (often seq 1).
+    const audioReady =
+      Boolean(expected) &&
+      (missingAudioAll.length === 0 || (timedOut && hasAnyAudio));
+    const videoReady =
+      Boolean(expected) &&
+      (missingVideoAll.length === 0 || (timedOut && hasAnyVideo));
 
     await refreshChunkCounters(meeting);
     meeting.totalChunks = expected
       ? expected * (hasSplitTracks ? 2 : 1)
       : meeting.uploadedChunks;
 
-    if (expected && missingAudioAll.length === 0 && !meeting.pipelineStopEnqueued) {
-      meeting.pipelineStopEnqueued = true;
+    // Arm conversation stop as soon as the client reports the final sequence,
+    // even while still waiting for late uploads.
+    if (expected && meeting.stopRequestedAt) {
       await markConversationStopRequested({
         conversationId: meeting._id,
         expectedLastSequence: expected,
-        stoppedAt: meeting.endedAt || new Date(),
+        stoppedAt: meeting.endedAt || meeting.stopRequestedAt || new Date(),
       });
+    }
+
+    if (expected && audioReady && !meeting.pipelineStopEnqueued) {
+      if (timedOut && missingAudioAll.length > 0) {
+        await markMissingUploadSequencesTerminal({
+          conversationId: meeting._id,
+          userId: meeting.userId,
+          spaceId: meeting.spaceId ?? null,
+          missingSequences: missingAudioAll,
+        });
+        logMeetingEvent("meeting_upload_gaps_abandoned", {
+          meetingSessionId: String(meeting._id),
+          userId: String(meeting.userId),
+          missingAudioCount: missingAudioAll.length,
+          missingAudioSequences: missingAudioAll.slice(0, 20).join(","),
+          uploadedAudioCount: audioSeqs.length,
+        });
+      }
+      meeting.pipelineStopEnqueued = true;
       await this.queue.publish(
         config.finalizationStream,
         buildEnvelope({
           eventId: `meeting:${String(meeting._id)}:finalize`,
           eventType: "conversation.finalization.requested",
           userId: String(meeting.userId),
-          spaceId: String(meeting.spaceId),
+          spaceId: spaceIdForEvent(meeting.spaceId),
           conversationId: String(meeting._id),
           payload: {
             expectedLastSequence: expected,
             inputClosed: true,
             sourceType: MEETING_SOURCE_TYPE,
             meetingSessionId: String(meeting._id),
+            uploadsTimedOut: timedOut && missingAudioAll.length > 0,
           },
         }),
       );
       logMeetingEvent("meeting_audio_pipeline_started", {
         meetingSessionId: String(meeting._id),
         userId: String(meeting.userId),
+        uploadsTimedOut: timedOut && missingAudioAll.length > 0,
       });
     }
 
     if (
       expected &&
-      missingVideoAll.length === 0 &&
+      videoReady &&
       config.videoFinalizationEnabled &&
       (meeting.videoMergeStatus === VideoMergeStatus.NOT_STARTED || !meeting.videoMergeStatus)
     ) {
@@ -736,12 +817,13 @@ export class MeetingRecordingService {
           eventId: `meeting:${String(meeting._id)}:merge`,
           eventType: "meeting.video.merge.requested",
           userId: String(meeting.userId),
-          spaceId: String(meeting.spaceId),
+          spaceId: spaceIdForEvent(meeting.spaceId),
           conversationId: String(meeting._id),
           payload: {
             meetingSessionId: String(meeting._id),
             userId: String(meeting.userId),
             expectedFinalSequence: expected,
+            allowMissingSequences: timedOut && missingVideoAll.length > 0,
             s3Prefix: config.s3Prefix,
             finalRecordingS3Key: buildFinalRecordingS3Key({
               prefix: config.s3Prefix,
@@ -757,7 +839,10 @@ export class MeetingRecordingService {
       });
     }
 
-    const uploadsIncomplete = !expected || missingAudioAll.length > 0 || missingVideoAll.length > 0;
+    const uploadsIncomplete =
+      !expected ||
+      (!audioReady && missingAudioAll.length > 0) ||
+      (!videoReady && missingVideoAll.length > 0);
     const alreadyPastUploads =
       meeting.status === MeetingStatus.UPLOAD_COMPLETE ||
       meeting.status === MeetingStatus.PROCESSING ||
@@ -776,6 +861,7 @@ export class MeetingRecordingService {
         status: meeting.status,
         missingAudioCount: missingAudioAll.length,
         missingVideoCount: missingVideoAll.length,
+        uploadWaitTimedOut: timedOut,
       });
       return this.toStopResponse(meeting, missingAudio, missingVideo);
     }
@@ -788,12 +874,17 @@ export class MeetingRecordingService {
         meetingSessionId: String(meeting._id),
         userId: String(meeting.userId),
         status: meeting.status,
+        abandonedMissingAudio: timedOut ? missingAudioAll.length : 0,
       });
       meeting.status = MeetingStatus.PROCESSING;
       await meeting.save();
     }
 
-    return this.toStopResponse(meeting, [], []);
+    return this.toStopResponse(
+      meeting,
+      timedOut ? missingAudio : [],
+      timedOut ? missingVideo : [],
+    );
   }
 
   private async syncFromConversation(
@@ -834,7 +925,7 @@ export class MeetingRecordingService {
   ) {
     return {
       meetingSessionId: String(meeting._id),
-      spaceId: meeting.spaceId ? String(meeting.spaceId) : null,
+      spaceId: spaceIdForResponse(meeting.spaceId),
       status: meeting.status,
       chunkDurationMs,
     };
@@ -864,7 +955,7 @@ export class MeetingRecordingService {
     return {
       meetingSessionId: String(meeting._id),
       userId: String(meeting.userId),
-      spaceId: String(meeting.spaceId),
+      spaceId: spaceIdForResponse(meeting.spaceId),
       provider: meeting.provider,
       sourceType: meeting.sourceType || MEETING_SOURCE_TYPE,
       meetingTitle: meeting.meetingTitle,

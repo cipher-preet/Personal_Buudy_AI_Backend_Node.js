@@ -18,7 +18,8 @@ const meetingSessionSchema = new mongoose.Schema(
     spaceId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Space",
-      required: true,
+      default: null,
+      required: false,
     },
     provider: {
       type: String,
