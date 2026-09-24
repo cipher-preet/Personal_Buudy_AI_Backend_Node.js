@@ -30,6 +30,14 @@ app.use(
       "Authorization",
       "X-Requested-With",
       "x-admin-key",
+      "Range",
+    ],
+    exposedHeaders: [
+      "Accept-Ranges",
+      "Content-Range",
+      "Content-Length",
+      "Content-Type",
+      "ETag",
     ],
   }),
 );

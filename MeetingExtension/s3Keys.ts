@@ -73,7 +73,7 @@ export const buildFinalRecordingS3Key = ({
 }) => {
   assertSafeId(userId, "userId");
   assertSafeId(meetingSessionId, "meetingSessionId");
-  return `${prefix}/${sanitizeKeyPart(userId)}/${sanitizeKeyPart(meetingSessionId)}/meeting.webm`;
+  return `${prefix}/${sanitizeKeyPart(userId)}/${sanitizeKeyPart(meetingSessionId)}/meeting.mp4`;
 };
 
 export const buildChunkId = (

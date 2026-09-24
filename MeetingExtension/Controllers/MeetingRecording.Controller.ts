@@ -100,6 +100,33 @@ export const getMeetingTranscriptController = async (req: CustomRequest, res: Re
   );
 };
 
+export const getMeetingSummaryController = async (req: CustomRequest, res: Response) => {
+  if (!isMeetingExtensionEnabled()) {
+    return unavailable(res);
+  }
+  return handle(res, () =>
+    meetingRecordingService.getSummary(ownerId(req), param(req.params.sessionId)),
+  );
+};
+
+export const getMeetingTasksController = async (req: CustomRequest, res: Response) => {
+  if (!isMeetingExtensionEnabled()) {
+    return unavailable(res);
+  }
+  return handle(res, () =>
+    meetingRecordingService.getTasks(ownerId(req), param(req.params.sessionId)),
+  );
+};
+
+export const getMeetingNotesController = async (req: CustomRequest, res: Response) => {
+  if (!isMeetingExtensionEnabled()) {
+    return unavailable(res);
+  }
+  return handle(res, () =>
+    meetingRecordingService.getNotes(ownerId(req), param(req.params.sessionId)),
+  );
+};
+
 export const getMeetingPlaybackController = async (req: CustomRequest, res: Response) => {
   if (!isMeetingExtensionEnabled()) {
     return unavailable(res);
@@ -107,4 +134,95 @@ export const getMeetingPlaybackController = async (req: CustomRequest, res: Resp
   return handle(res, () =>
     meetingRecordingService.getPlayback(ownerId(req), param(req.params.sessionId)),
   );
+};
+
+export const streamMeetingPlaybackController = async (req: CustomRequest, res: Response) => {
+  if (!isMeetingExtensionEnabled()) {
+    return unavailable(res);
+  }
+
+  try {
+    const rangeHeader = typeof req.headers.range === "string" ? req.headers.range : undefined;
+    const stream = await meetingRecordingService.openPlaybackStream(
+      ownerId(req),
+      param(req.params.sessionId),
+      rangeHeader,
+    );
+
+    res.status(stream.statusCode);
+    res.setHeader("Content-Type", stream.contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "private, no-store");
+    // Prevent intermediaries from rewriting to chunked encoding (breaks timeline seeking).
+    if (stream.contentLength != null) {
+      res.setHeader("Content-Length", String(stream.contentLength));
+    }
+    if (stream.contentRange) {
+      res.setHeader("Content-Range", stream.contentRange);
+    }
+    if (stream.etag) {
+      res.setHeader("ETag", stream.etag);
+    }
+
+    const body = stream.body as {
+      pipe?: (dest: Response) => { on?: (event: string, cb: (...args: unknown[]) => void) => void };
+      destroy?: (error?: Error) => void;
+    } | null;
+
+    if (!body || typeof body.pipe !== "function") {
+      return ErrorResponse(res, 502, "Recording stream unavailable.", {
+        code: MeetingErrorCode.MEETING_PROCESSING_FAILED,
+      });
+    }
+
+    const abortStream = () => {
+      if (typeof body.destroy === "function") {
+        body.destroy();
+      }
+    };
+
+    req.on("close", () => {
+      // Only tear down when the client aborts (seek / remount). Finished responses are fine.
+      if (!res.writableEnded && (req.aborted || req.destroyed)) {
+        abortStream();
+      }
+    });
+
+    body.pipe(res)?.on?.("error", (error: unknown) => {
+      console.error("Meeting playback stream pipe error", error);
+      abortStream();
+      if (!res.headersSent) {
+        ErrorResponse(res, 502, "Recording stream unavailable.", {
+          code: MeetingErrorCode.MEETING_PROCESSING_FAILED,
+        });
+        return;
+      }
+      res.destroy();
+    });
+  } catch (error) {
+    if (error instanceof MeetingError) {
+      if (error.status === 416) {
+        const totalSize =
+          error.data && typeof error.data === "object" && "totalSize" in error.data
+            ? Number((error.data as { totalSize?: unknown }).totalSize)
+            : null;
+        res.setHeader("Accept-Ranges", "bytes");
+        if (Number.isFinite(totalSize) && totalSize != null && totalSize > 0) {
+          res.setHeader("Content-Range", `bytes */${totalSize}`);
+        }
+        return ErrorResponse(res, 416, error.message, {
+          code: error.code,
+          ...(error.data || {}),
+        });
+      }
+      return ErrorResponse(res, error.status, error.message, {
+        code: error.code,
+        ...(error.data || {}),
+      });
+    }
+    console.error("Meeting playback stream error", error);
+    return ErrorResponse(res, 500, "Something went wrong. Please try again.", {
+      code: MeetingErrorCode.MEETING_PROCESSING_FAILED,
+    });
+  }
 };

@@ -31,7 +31,7 @@ export const getMeetingConfig = () => {
     playbackTtlSeconds: readInt("MEETING_PLAYBACK_PRESIGN_TTL_SECONDS", 900),
     staleAfterMinutes: readInt("MEETING_RECORDING_STALE_AFTER_MINUTES", 180),
     // After STOP, wait this long for late chunk uploads before finalizing with gaps.
-    uploadWaitTimeoutSeconds: readInt("MEETING_UPLOAD_WAIT_TIMEOUT_SECONDS", 120),
+    uploadWaitTimeoutSeconds: readInt("MEETING_UPLOAD_WAIT_TIMEOUT_SECONDS", 180),
     sourceChunkRetentionDays: readInt("MEETING_SOURCE_CHUNK_RETENTION_DAYS", 7),
     videoFinalizationEnabled: readBool(
       "MEETING_VIDEO_FINALIZATION_ENABLED",

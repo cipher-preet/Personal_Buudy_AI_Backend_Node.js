@@ -23,6 +23,10 @@ import {
   getUserActiveSpaceServices,
   getUserSpacesByUserIdServices,
   startListningServices,
+  updateSpaceServices,
+  updateStagedNoteServices,
+  updateStagedTaskServices,
+  setStagedTaskStatusServices,
 } from "../Services/Home.services.js";
 import mongoose, { Model } from "mongoose";
 
@@ -78,14 +82,12 @@ const createSpaceController = async (
 const getAuthenticatedUserId = (req: CustomRequest) =>
   req.authUser?.id || req.session?.user?.id;
 
-const TITLE_MAX_LENGTH = 80;
-const DESCRIPTION_MAX_LENGTH = 500;
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const parseRequiredText = (
   value: unknown,
   fieldName: string,
-  maxLength: number,
+  maxLength?: number,
 ) => {
   if (typeof value !== "string" || value.trim().length === 0) {
     return { error: `${fieldName} is required.` };
@@ -93,7 +95,7 @@ const parseRequiredText = (
 
   const trimmed = value.trim();
 
-  if (trimmed.length > maxLength) {
+  if (typeof maxLength === "number" && trimmed.length > maxLength) {
     return {
       error: `${fieldName} must be at most ${maxLength} characters.`,
     };
@@ -148,6 +150,90 @@ const deleteSpaceController = async (
     }
 
     return SuccessResponse(res, response.status, response);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const updateSpaceController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const { spaceId, spacename, description } = req.body;
+    const userId = getAuthenticatedUserId(req);
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!spaceId || typeof spaceId !== "string") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'spaceId'.",
+      );
+    }
+
+    if (spacename === undefined && description === undefined) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "At least one of 'spacename' or 'description' is required.",
+      );
+    }
+
+    const updates: { spacename?: string; description?: string } = {};
+
+    if (spacename !== undefined) {
+      if (
+        typeof spacename !== "string" ||
+        spacename.trim().length < 3
+      ) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Invalid or missing 'spacename'. It must be at least 3 characters.",
+        );
+      }
+      updates.spacename = spacename.trim();
+    }
+
+    if (description !== undefined) {
+      if (typeof description !== "string") {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Invalid 'description'.",
+        );
+      }
+      updates.description = description.trim();
+    }
+
+    const response = await updateSpaceServices(
+      String(userId),
+      spaceId.trim(),
+      updates,
+    );
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to update space.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, {
+      message: response.message,
+      space:
+        response.data && "space" in response.data
+          ? response.data.space
+          : undefined,
+    });
   } catch (error) {
     next(error);
   }
@@ -466,6 +552,97 @@ const deleteStagedNoteController = async (
 
 //--------------------------------------------------------------------------------
 
+const updateStagedNoteController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const { noteId, title, description, date } = req.body;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!noteId || typeof noteId !== "string") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'noteId'.",
+      );
+    }
+
+    if (title === undefined && description === undefined && date === undefined) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "At least one of 'title', 'description', or 'date' is required.",
+      );
+    }
+
+    const updates: { title?: string; body?: string; dateKey?: string } = {};
+
+    if (title !== undefined) {
+      const parsedTitle = parseRequiredText(title, "Title");
+      if (parsedTitle.error) {
+        return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTitle.error);
+      }
+      updates.title = parsedTitle.value;
+    }
+
+    if (description !== undefined) {
+      const parsedDescription = parseRequiredText(description, "Description");
+      if (parsedDescription.error) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          parsedDescription.error,
+        );
+      }
+      updates.body = parsedDescription.value;
+    }
+
+    if (date !== undefined) {
+      const parsedDate = parseOptionalDateKey(date);
+      if (parsedDate.error || !parsedDate.value) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          parsedDate.error || "Invalid 'date'. Use YYYY-MM-DD.",
+        );
+      }
+      updates.dateKey = parsedDate.value;
+    }
+
+    const response = await updateStagedNoteServices(
+      String(userId),
+      noteId.trim(),
+      updates,
+    );
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to update note.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, {
+      message: response.message,
+      note:
+        response.data && "note" in response.data
+          ? response.data.note
+          : undefined,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 const getStagedTasksBySpaceController = async (
   req: Request,
   res: Response,
@@ -574,6 +751,175 @@ const deleteStagedTaskController = async (
 
 //--------------------------------------------------------------------------------
 
+const updateStagedTaskController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const { taskId, title, description, date, priority } = req.body;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!taskId || typeof taskId !== "string") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'taskId'.",
+      );
+    }
+
+    if (
+      title === undefined &&
+      description === undefined &&
+      date === undefined &&
+      priority === undefined
+    ) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "At least one of 'title', 'description', 'date', or 'priority' is required.",
+      );
+    }
+
+    const updates: {
+      title?: string;
+      description?: string;
+      dateKey?: string;
+      priority?: string;
+    } = {};
+
+    if (title !== undefined) {
+      const parsedTitle = parseRequiredText(title, "Title");
+      if (parsedTitle.error) {
+        return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTitle.error);
+      }
+      updates.title = parsedTitle.value;
+    }
+
+    if (description !== undefined) {
+      const parsedDescription = parseRequiredText(description, "Description");
+      if (parsedDescription.error) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          parsedDescription.error,
+        );
+      }
+      updates.description = parsedDescription.value;
+    }
+
+    if (date !== undefined) {
+      const parsedDate = parseOptionalDateKey(date);
+      if (parsedDate.error || !parsedDate.value) {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          parsedDate.error || "Invalid 'date'. Use YYYY-MM-DD.",
+        );
+      }
+      updates.dateKey = parsedDate.value;
+    }
+
+    if (priority !== undefined) {
+      if (typeof priority !== "string") {
+        return ErrorResponse(
+          res,
+          STATUS_CODE.BAD_REQUEST,
+          "Invalid 'priority'.",
+        );
+      }
+      updates.priority = priority;
+    }
+
+    const response = await updateStagedTaskServices(
+      String(userId),
+      taskId.trim(),
+      updates,
+    );
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to update task.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, {
+      message: response.message,
+      task:
+        response.data && "task" in response.data
+          ? response.data.task
+          : undefined,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const setStagedTaskStatusController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const { taskId, done } = req.body;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    if (!taskId || typeof taskId !== "string" || !mongoose.isValidObjectId(taskId)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'taskId'.",
+      );
+    }
+
+    if (typeof done !== "boolean") {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid or missing 'done'. Expected a boolean.",
+      );
+    }
+
+    const response = await setStagedTaskStatusServices(
+      String(userId),
+      taskId.trim(),
+      done,
+    );
+
+    if (response.status !== STATUS_CODE.OK) {
+      return ErrorResponse(
+        res,
+        response.status,
+        response.message || "Unable to update task status.",
+      );
+    }
+
+    return SuccessResponse(res, response.status, {
+      message: response.message,
+      task:
+        response.data && "task" in response.data
+          ? response.data.task
+          : undefined,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 const createStagedNoteController = async (
   req: CustomRequest,
   res: Response,
@@ -595,16 +941,12 @@ const createStagedNoteController = async (
       );
     }
 
-    const parsedTitle = parseRequiredText(title, "Title", TITLE_MAX_LENGTH);
+    const parsedTitle = parseRequiredText(title, "Title");
     if (parsedTitle.error) {
       return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTitle.error);
     }
 
-    const parsedDescription = parseRequiredText(
-      description,
-      "Description",
-      DESCRIPTION_MAX_LENGTH,
-    );
+    const parsedDescription = parseRequiredText(description, "Description");
     if (parsedDescription.error) {
       return ErrorResponse(
         res,
@@ -656,7 +998,7 @@ const createStagedTaskController = async (
 ): Promise<any> => {
   try {
     const userId = getAuthenticatedUserId(req);
-    const { spaceId, title, description, date } = req.body;
+    const { spaceId, title, description, date, priority } = req.body;
 
     if (!userId) {
       return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
@@ -670,16 +1012,12 @@ const createStagedTaskController = async (
       );
     }
 
-    const parsedTitle = parseRequiredText(title, "Title", TITLE_MAX_LENGTH);
+    const parsedTitle = parseRequiredText(title, "Title");
     if (parsedTitle.error) {
       return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, parsedTitle.error);
     }
 
-    const parsedDescription = parseRequiredText(
-      description,
-      "Description",
-      DESCRIPTION_MAX_LENGTH,
-    );
+    const parsedDescription = parseRequiredText(description, "Description");
     if (parsedDescription.error) {
       return ErrorResponse(
         res,
@@ -699,6 +1037,7 @@ const createStagedTaskController = async (
       parsedTitle.value!,
       parsedDescription.value!,
       parsedDate.value,
+      typeof priority === "string" ? priority : undefined,
     );
 
     if (response.status !== STATUS_CODE.CREATED) {
@@ -875,5 +1214,9 @@ export {
   getUserSpacesByUserIdController,
   getUserActiveSpaceController,
   startListningController,
-  gettranscriptchunkcontroller
+  gettranscriptchunkcontroller,
+  updateSpaceController,
+  updateStagedNoteController,
+  updateStagedTaskController,
+  setStagedTaskStatusController,
 };

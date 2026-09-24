@@ -371,10 +371,38 @@ export const getUserSpacesByUserIdRepository = async (
             .toArray()
             .catch(() => [])
         : [];
+    const noteCounts =
+      results.length > 0
+        ? await mongoose.connection
+            .collection("notes")
+            .aggregate([
+              {
+                $match: {
+                  userId: createIdFilter(userId),
+                  spaceId: spaceIdFilter,
+                  ...notDeleted,
+                },
+              },
+              {
+                $group: {
+                  _id: "$spaceId",
+                  notesCount: { $sum: 1 },
+                },
+              },
+            ])
+            .toArray()
+            .catch(() => [])
+        : [];
     const taskCountBySpaceId = new Map<string, number>();
     (taskCounts as Array<{ _id?: unknown; tasksCount?: number }>).forEach(
       item => {
         taskCountBySpaceId.set(String(item._id), item.tasksCount ?? 0);
+      },
+    );
+    const noteCountBySpaceId = new Map<string, number>();
+    (noteCounts as Array<{ _id?: unknown; notesCount?: number }>).forEach(
+      item => {
+        noteCountBySpaceId.set(String(item._id), item.notesCount ?? 0);
       },
     );
 
@@ -385,6 +413,7 @@ export const getUserSpacesByUserIdRepository = async (
         spaces: results.map(space => ({
           ...space,
           tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0,
+          notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0,
         })),
         nextCursor,
       },
@@ -534,6 +563,70 @@ export const deleteSpaceRepository = async (
       message: "Space deleted successfully.",
       data: {
         deletedSpaceId: String(response._id),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const updateSpaceRepository = async (
+  userId: string,
+  spaceId: string,
+  updates: { spacename?: string; description?: string },
+) => {
+  try {
+    if (!mongoose.isValidObjectId(spaceId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'spaceId' value.",
+      };
+    }
+
+    const $set: Record<string, string> = {};
+    if (updates.spacename !== undefined) {
+      $set.spacename = updates.spacename;
+    }
+    if (updates.description !== undefined) {
+      $set.description = updates.description;
+    }
+
+    if (Object.keys($set).length === 0) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "At least one of 'spacename' or 'description' is required.",
+      };
+    }
+
+    const updated = await CreateSpace.findOneAndUpdate(
+      {
+        _id: spaceId,
+        userId: createIdFilter(userId),
+        deletedAt: null,
+      },
+      { $set },
+      { new: true },
+    );
+
+    if (!updated) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Space not found.",
+      };
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: "Space updated successfully.",
+      data: {
+        space: {
+          id: String(updated._id),
+          spacename: updated.spacename,
+          description: updated.description,
+        },
       },
     };
   } catch (error) {
@@ -940,6 +1033,141 @@ export const deleteStagedNoteRepository = async (
 
 //------------------------------------------------------------------------------------------------------------------
 
+const unwrapFindOneResult = (
+  result: unknown,
+): Record<string, any> | null => {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  if ("value" in result) {
+    return (
+      (result as unknown as { value: Record<string, any> | null }).value ?? null
+    );
+  }
+  return result as Record<string, any>;
+};
+
+export const updateStagedNoteRepository = async (
+  userId: string,
+  noteId: string,
+  updates: { title?: string; body?: string; dateKey?: string },
+) => {
+  try {
+    if (!mongoose.isValidObjectId(noteId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'noteId' value.",
+      };
+    }
+
+    if (updates.dateKey && !DATE_KEY_PATTERN.test(updates.dateKey)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'date' value. Expected YYYY-MM-DD.",
+      };
+    }
+
+    const now = new Date();
+    const $set: Record<string, unknown> = { updatedAt: now };
+    if (updates.title !== undefined) {
+      $set.title = updates.title;
+    }
+    if (updates.body !== undefined) {
+      $set.body = updates.body;
+    }
+    if (updates.dateKey !== undefined) {
+      $set.createdAt = toDateFromKey(updates.dateKey);
+    }
+
+    const noteObjectId = new mongoose.Types.ObjectId(noteId);
+    const ownershipFilter = {
+      _id: noteObjectId,
+      userId: createIdFilter(userId),
+    };
+    const notesCollection = mongoose.connection.collection("notes");
+
+    // Prefer main collection, then mirror to staged.
+    const mainResult = await notesCollection
+      .findOneAndUpdate(ownershipFilter, { $set }, { returnDocument: "after" })
+      .catch(() => null);
+    const mainNote = unwrapFindOneResult(mainResult);
+
+    if (mainNote) {
+      try {
+        await StagedNotes.findOneAndUpdate(
+          { _id: noteId, userId: createIdFilter(userId) },
+          { $set },
+          { new: true },
+        );
+      } catch (mirrorError) {
+        console.log("staged note update mirror failed", mirrorError);
+      }
+
+      return {
+        status: STATUS_CODE.OK,
+        message: "Note updated successfully.",
+        data: {
+          note: mapStagedNoteCard(mainNote),
+        },
+      };
+    }
+
+    // Main not found — try staged, then sync back to main.
+    const stagedNote = await StagedNotes.findOneAndUpdate(
+      { _id: noteId, userId: createIdFilter(userId) },
+      { $set },
+      { new: true },
+    ).lean();
+
+    if (!stagedNote) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Note not found.",
+      };
+    }
+
+    try {
+      await notesCollection.updateOne(
+        { _id: noteObjectId, userId: createIdFilter(userId) },
+        {
+          $set: {
+            title: stagedNote.title,
+            body: stagedNote.body,
+            confidence: stagedNote.confidence ?? null,
+            evidence: stagedNote.evidence ?? [],
+            origin: stagedNote.origin ?? "explicit",
+            source: stagedNote.source ?? "manual",
+            userId: stagedNote.userId,
+            spaceId: stagedNote.spaceId,
+            createdAt: stagedNote.createdAt ?? now,
+            updatedAt: stagedNote.updatedAt ?? now,
+            deletedAt: null,
+          },
+          $setOnInsert: {
+            _id: noteObjectId,
+          },
+        },
+        { upsert: true },
+      );
+    } catch (syncError) {
+      console.log("main note sync after staged update failed", syncError);
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: "Note updated successfully.",
+      data: {
+        note: mapStagedNoteCard(stagedNote as Record<string, any>),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
 export const getStagedTasksBySpaceRepository = async (
   userId: string,
   spaceId: string,
@@ -1126,6 +1354,260 @@ export const deleteStagedTaskRepository = async (
 
 //------------------------------------------------------------------------------------------------------------------
 
+export const updateStagedTaskRepository = async (
+  userId: string,
+  taskId: string,
+  updates: {
+    title?: string;
+    description?: string;
+    dateKey?: string;
+    priority?: string;
+  },
+) => {
+  try {
+    if (!mongoose.isValidObjectId(taskId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'taskId' value.",
+      };
+    }
+
+    if (updates.dateKey && !DATE_KEY_PATTERN.test(updates.dateKey)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'date' value. Expected YYYY-MM-DD.",
+      };
+    }
+
+    const now = new Date();
+    const $set: Record<string, unknown> = { updatedAt: now };
+
+    if (updates.title !== undefined) {
+      $set.title = updates.title;
+    }
+    if (updates.description !== undefined) {
+      $set.body = updates.description;
+      $set.description = updates.description;
+    }
+    if (updates.dateKey !== undefined) {
+      const dueDate = DATE_KEY_PATTERN.test(updates.dateKey)
+        ? updates.dateKey
+        : null;
+      $set.dueDate = dueDate;
+      $set.dueDateStatus = dueDate ? "resolved" : "none";
+    }
+    if (updates.priority !== undefined) {
+      const value = String(updates.priority || "Medium").trim().toLowerCase();
+      if (value === "high" || value === "h" || value === "urgent") {
+        $set.priority = "High";
+      } else if (value === "low" || value === "l") {
+        $set.priority = "Low";
+      } else {
+        $set.priority = "Medium";
+      }
+    }
+
+    const taskObjectId = new mongoose.Types.ObjectId(taskId);
+    const ownershipFilter = {
+      _id: taskObjectId,
+      userId: createIdFilter(userId),
+    };
+    const tasksCollection = mongoose.connection.collection("tasks");
+
+    const mainResult = await tasksCollection
+      .findOneAndUpdate(ownershipFilter, { $set }, { returnDocument: "after" })
+      .catch(() => null);
+    const mainTask = unwrapFindOneResult(mainResult);
+
+    if (mainTask) {
+      try {
+        await StagedTasks.findOneAndUpdate(
+          { _id: taskId, userId: createIdFilter(userId) },
+          { $set },
+          { new: true },
+        );
+      } catch (mirrorError) {
+        console.log("staged task update mirror failed", mirrorError);
+      }
+
+      return {
+        status: STATUS_CODE.OK,
+        message: "Task updated successfully.",
+        data: {
+          task: mapStagedTaskCard(mainTask),
+        },
+      };
+    }
+
+    const stagedTask = await StagedTasks.findOneAndUpdate(
+      { _id: taskId, userId: createIdFilter(userId) },
+      { $set },
+      { new: true },
+    ).lean();
+
+    if (!stagedTask) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Task not found.",
+      };
+    }
+
+    try {
+      await tasksCollection.updateOne(
+        { _id: taskObjectId, userId: createIdFilter(userId) },
+        {
+          $set: {
+            title: stagedTask.title,
+            body: stagedTask.body ?? stagedTask.description ?? "",
+            description: stagedTask.description ?? stagedTask.body ?? "",
+            evidence: stagedTask.evidence ?? [],
+            operation: stagedTask.operation ?? null,
+            status: stagedTask.status ?? "pending",
+            priority: stagedTask.priority ?? null,
+            dueDate: stagedTask.dueDate ?? null,
+            dueDateStatus: stagedTask.dueDateStatus ?? (
+              stagedTask.dueDate ? "resolved" : "none"
+            ),
+            confidence: stagedTask.confidence ?? null,
+            origin: stagedTask.origin ?? "explicit",
+            source: stagedTask.source ?? "manual",
+            userId: stagedTask.userId,
+            spaceId: stagedTask.spaceId,
+            createdAt: stagedTask.createdAt ?? now,
+            updatedAt: stagedTask.updatedAt ?? now,
+            deletedAt: null,
+          },
+          $setOnInsert: {
+            _id: taskObjectId,
+          },
+        },
+        { upsert: true },
+      );
+    } catch (syncError) {
+      console.log("main task sync after staged update failed", syncError);
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: "Task updated successfully.",
+      data: {
+        task: mapStagedTaskCard(stagedTask as Record<string, any>),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const setStagedTaskStatusRepository = async (
+  userId: string,
+  taskId: string,
+  done: boolean,
+) => {
+  try {
+    if (!mongoose.isValidObjectId(taskId)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid 'taskId' value.",
+      };
+    }
+
+    const now = new Date();
+    const $set: Record<string, unknown> = {
+      updatedAt: now,
+      operation: done ? "DONE" : "CREATE",
+      status: done ? "completed" : "pending",
+    };
+
+    const taskObjectId = new mongoose.Types.ObjectId(taskId);
+    const ownershipFilter = {
+      _id: taskObjectId,
+      userId: createIdFilter(userId),
+    };
+    const tasksCollection = mongoose.connection.collection("tasks");
+
+    const mainResult = await tasksCollection
+      .findOneAndUpdate(ownershipFilter, { $set }, { returnDocument: "after" })
+      .catch(() => null);
+    const mainTask = unwrapFindOneResult(mainResult);
+
+    if (mainTask) {
+      try {
+        await StagedTasks.findOneAndUpdate(
+          { _id: taskId, userId: createIdFilter(userId) },
+          { $set },
+          { new: true },
+        );
+      } catch (mirrorError) {
+        console.log("staged task status mirror failed", mirrorError);
+      }
+
+      return {
+        status: STATUS_CODE.OK,
+        message: done ? "Task marked as done." : "Task marked as open.",
+        data: {
+          task: mapStagedTaskCard(mainTask),
+        },
+      };
+    }
+
+    const stagedTask = await StagedTasks.findOneAndUpdate(
+      { _id: taskId, userId: createIdFilter(userId) },
+      { $set },
+      { new: true },
+    ).lean();
+
+    if (!stagedTask) {
+      return {
+        status: STATUS_CODE.NOT_FOUND,
+        message: "Task not found.",
+      };
+    }
+
+    try {
+      await tasksCollection.updateOne(
+        { _id: taskObjectId, userId: createIdFilter(userId) },
+        {
+          $set: {
+            ...$set,
+            title: stagedTask.title,
+            body: stagedTask.body ?? stagedTask.description ?? "",
+            description: stagedTask.description ?? stagedTask.body ?? "",
+            userId: stagedTask.userId,
+            spaceId: stagedTask.spaceId,
+            priority: stagedTask.priority ?? null,
+            dueDate: stagedTask.dueDate ?? null,
+            createdAt: stagedTask.createdAt ?? now,
+            deletedAt: null,
+          },
+          $setOnInsert: {
+            _id: taskObjectId,
+          },
+        },
+        { upsert: true },
+      );
+    } catch (syncError) {
+      console.log("main task sync after status update failed", syncError);
+    }
+
+    return {
+      status: STATUS_CODE.OK,
+      message: done ? "Task marked as done." : "Task marked as open.",
+      data: {
+        task: mapStagedTaskCard(stagedTask as Record<string, any>),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
 export const createStagedNoteRepository = async (
   userId: string,
   spaceId: string,
@@ -1191,6 +1673,7 @@ export const createStagedTaskRepository = async (
   title: string,
   description: string,
   dateKey?: string,
+  priority?: string,
 ) => {
   try {
     const access = await assertCanCreateInSpace(userId, spaceId, "tasks");
@@ -1205,6 +1688,12 @@ export const createStagedTaskRepository = async (
 
     const now = new Date();
     const dueDate = dateKey && DATE_KEY_PATTERN.test(dateKey) ? dateKey : null;
+    const normalizedPriority = (() => {
+      const value = String(priority || "Medium").trim().toLowerCase();
+      if (value === "high" || value === "h" || value === "urgent") return "High";
+      if (value === "low" || value === "l") return "Low";
+      return "Medium";
+    })();
     const _id = new mongoose.Types.ObjectId();
     const payload = {
       _id,
@@ -1218,6 +1707,7 @@ export const createStagedTaskRepository = async (
       confidence: 1,
       needsConfirmation: false,
       evidence: [],
+      priority: normalizedPriority,
       dueDate,
       dueDateStatus: dueDate ? "resolved" : "none",
       userId: toOwnedObjectId(userId),

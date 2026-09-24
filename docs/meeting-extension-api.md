@@ -174,6 +174,31 @@ Meeting metadata plus simplified client status:
 
 Segments sorted by `startOffsetMs` ASC. Timestamps are meeting-relative (not reset per chunk). `speakerId` is nullable; names are never guessed.
 
+### GET /api/v1/meeting-recordings/:sessionId/summary
+
+Returns the conversation summary for this meeting (`conversationId` = session id). Soft-empty when processing has not produced a summary yet:
+
+```json
+{
+  "meetingSessionId": "...",
+  "available": false,
+  "summary": null,
+  "topics": [],
+  "importantFacts": [],
+  "decisions": [],
+  "openQuestions": [],
+  "blockers": []
+}
+```
+
+### GET /api/v1/meeting-recordings/:sessionId/tasks
+
+Published + staged tasks for this meeting (`sourceConversationId` / `conversationId`). Deduped by id. Empty `items` when none exist yet.
+
+### GET /api/v1/meeting-recordings/:sessionId/notes
+
+Published + staged notes for this meeting. Same soft-empty pattern as tasks.
+
 ### GET /api/v1/meeting-recordings/:sessionId/playback
 
 Short-lived signed GET URL for `finalRecordingS3Key`. Returns `409 MEETING_PLAYBACK_NOT_READY` until merge completes. Source chunks are never deleted by merge failure.

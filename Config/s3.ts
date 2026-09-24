@@ -149,17 +149,35 @@ export const createPresignedPutUrl = async ({
 export const createPresignedGetUrl = async ({
   key,
   expiresInSeconds,
+  responseContentType,
 }: {
   key: string;
   expiresInSeconds: number;
+  responseContentType?: string;
 }) => {
   if (!hasS3Config || !bucket) {
     throw new Error("S3 is not configured");
   }
 
+  const inferredType =
+    responseContentType ||
+    (key.toLowerCase().endsWith(".mp4")
+      ? "video/mp4"
+      : key.toLowerCase().endsWith(".webm")
+        ? "video/webm"
+        : key.toLowerCase().endsWith(".wav")
+          ? "audio/wav"
+          : undefined);
+
   const command = new GetObjectCommand({
     Bucket: bucket,
     Key: key,
+    ...(inferredType
+      ? {
+          ResponseContentType: inferredType,
+          ResponseContentDisposition: "inline",
+        }
+      : {}),
   });
 
   const url = await getSignedUrl(s3Client, command, {
@@ -168,6 +186,26 @@ export const createPresignedGetUrl = async ({
   const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
 
   return { url, expiresAt, bucket };
+};
+
+export const getS3Object = async ({
+  key,
+  range,
+}: {
+  key: string;
+  range?: string;
+}) => {
+  if (!hasS3Config || !bucket) {
+    throw new Error("S3 is not configured");
+  }
+
+  return s3Client.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ...(range ? { Range: range } : {}),
+    }),
+  );
 };
 
 export const headS3Object = async (key: string) => {

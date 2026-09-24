@@ -303,3 +303,169 @@ export const getArtifactCounts = async (conversationId: string) => {
     hasSummary: Boolean(summary),
   };
 };
+
+const conversationScopedFilter = (conversationId: string) => {
+  const id = idFilter(conversationId) as any;
+  return {
+    $or: [{ sourceConversationId: id }, { conversationId: id }],
+    $and: [
+      {
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+      },
+    ],
+  };
+};
+
+const toIso = (value: unknown) => {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+const mapTaskDoc = (doc: Record<string, any>, staged: boolean) => {
+  const operation = String(doc.operation || "").toUpperCase();
+  let status = String(doc.status || "open").toLowerCase();
+  if (operation === "COMPLETE" || status === "done" || status === "completed") {
+    status = "done";
+  } else if (operation === "CANCEL" || status === "blocked" || status === "cancelled") {
+    status = "blocked";
+  } else {
+    status = "open";
+  }
+
+  return {
+    id: String(doc._id),
+    title: String(doc.title || "Untitled task"),
+    body: String(doc.body || ""),
+    owner: doc.ownerText ? String(doc.ownerText) : null,
+    dueDate: doc.dueDateResolved || doc.dueDateText || doc.dueDate || null,
+    status,
+    operation: operation || null,
+    confidence: typeof doc.confidence === "number" ? doc.confidence : null,
+    staged,
+    createdAt: toIso(doc.createdAt),
+    updatedAt: toIso(doc.updatedAt),
+  };
+};
+
+const mapNoteDoc = (doc: Record<string, any>, staged: boolean) => ({
+  id: String(doc._id),
+  title: String(doc.title || "Untitled note"),
+  body: String(doc.body || ""),
+  confidence: typeof doc.confidence === "number" ? doc.confidence : null,
+  staged,
+  createdAt: toIso(doc.createdAt),
+  updatedAt: toIso(doc.updatedAt),
+});
+
+const mergeById = <T extends { id: string }>(preferred: T[], fallback: T[]) => {
+  const map = new Map<string, T>();
+  for (const item of fallback) {
+    map.set(item.id, item);
+  }
+  for (const item of preferred) {
+    map.set(item.id, item);
+  }
+  return Array.from(map.values());
+};
+
+export const getConversationSummary = async (conversationId: string) => {
+  const id = idFilter(conversationId) as any;
+  const summary = await aiCollections().conversationSummaries.findOne({
+    conversationId: id,
+  });
+
+  if (!summary) {
+    return {
+      meetingSessionId: conversationId,
+      available: false,
+      summary: null,
+      topics: [] as string[],
+      importantFacts: [] as string[],
+      decisions: [] as string[],
+      openQuestions: [] as string[],
+      blockers: [] as string[],
+      languageCodes: [] as string[],
+      createdAt: null as string | null,
+    };
+  }
+
+  const doc = summary as Record<string, any>;
+  return {
+    meetingSessionId: conversationId,
+    available: true,
+    summary: doc.summary ? String(doc.summary) : "",
+    topics: Array.isArray(doc.topics) ? doc.topics.map(String) : [],
+    importantFacts: Array.isArray(doc.importantFacts)
+      ? doc.importantFacts.map(String)
+      : [],
+    decisions: Array.isArray(doc.decisions) ? doc.decisions.map(String) : [],
+    openQuestions: Array.isArray(doc.openQuestions)
+      ? doc.openQuestions.map(String)
+      : [],
+    blockers: Array.isArray(doc.blockers) ? doc.blockers.map(String) : [],
+    languageCodes: Array.isArray(doc.languageCodes)
+      ? doc.languageCodes.map(String)
+      : [],
+    createdAt: toIso(doc.createdAt),
+  };
+};
+
+export const listConversationTasks = async (conversationId: string) => {
+  const filter = conversationScopedFilter(conversationId);
+  const [published, staged] = await Promise.all([
+    aiCollections()
+      .tasks.find({
+        sourceConversationId: idFilter(conversationId) as any,
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+      })
+      .sort({ createdAt: -1 })
+      .toArray(),
+    aiCollections()
+      .stagedTasks.find(filter)
+      .sort({ createdAt: -1 })
+      .toArray(),
+  ]);
+
+  const items = mergeById(
+    published.map((doc) => mapTaskDoc(doc as Record<string, any>, false)),
+    staged.map((doc) => mapTaskDoc(doc as Record<string, any>, true)),
+  );
+
+  return {
+    meetingSessionId: conversationId,
+    items,
+  };
+};
+
+export const listConversationNotes = async (conversationId: string) => {
+  const filter = conversationScopedFilter(conversationId);
+  const [published, staged] = await Promise.all([
+    aiCollections()
+      .notes.find({
+        sourceConversationId: idFilter(conversationId) as any,
+        $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+      })
+      .sort({ createdAt: -1 })
+      .toArray(),
+    aiCollections()
+      .stagedNotes.find(filter)
+      .sort({ createdAt: -1 })
+      .toArray(),
+  ]);
+
+  const items = mergeById(
+    published.map((doc) => mapNoteDoc(doc as Record<string, any>, false)),
+    staged.map((doc) => mapNoteDoc(doc as Record<string, any>, true)),
+  );
+
+  return {
+    meetingSessionId: conversationId,
+    items,
+  };
+};

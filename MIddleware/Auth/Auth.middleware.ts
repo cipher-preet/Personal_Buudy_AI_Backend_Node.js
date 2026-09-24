@@ -22,9 +22,12 @@ export const requireAuth = (
   }
 
   const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ")
+  const headerToken = authHeader?.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : null;
+  const queryToken =
+    typeof req.query?.access_token === "string" ? req.query.access_token.trim() : null;
+  const token = headerToken || queryToken;
 
   if (token) {
     const payload = verifyAuthToken(token);

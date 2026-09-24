@@ -61,6 +61,8 @@ const meetingSessionSchema = new mongoose.Schema(
       default: VideoMergeStatus.NOT_STARTED,
     },
     finalRecordingS3Key: { type: String, default: null },
+    mergeMissingSequences: { type: [Number], default: [] },
+    mergePresentChunkCount: { type: Number, default: null },
     stopRequestedAt: { type: Date, default: null },
     finalizedAt: { type: Date, default: null },
     clientRequestId: { type: String, default: null },

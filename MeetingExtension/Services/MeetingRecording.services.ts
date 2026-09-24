@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import {
   createPresignedGetUrl,
   createPresignedPutUrl,
+  getS3Object,
   getSharedS3Bucket,
   hasSharedS3Config,
   headS3Object,
@@ -21,7 +22,10 @@ import { logMeetingEvent } from "../log.js";
 import {
   getArtifactCounts,
   getConversation,
+  getConversationSummary,
   insertConversationForMeeting,
+  listConversationNotes,
+  listConversationTasks,
   listTranscriptChunks,
   markConversationStopRequested,
   markMissingUploadSequencesTerminal,
@@ -131,6 +135,39 @@ const refreshChunkCounters = async (meeting: mongoose.Document & Record<string, 
   meeting.processedChunks = counts.processed;
   meeting.failedChunks = counts.failed;
   meeting.totalChunks = Math.max(meeting.totalChunks || 0, counts.uploaded);
+};
+
+/** Parse HTTP Range for byte serving so HTML5 video can scrub the timeline. */
+const parseByteRange = (rangeHeader: string | undefined, totalSize: number) => {
+  if (!rangeHeader || totalSize <= 0) {
+    return null;
+  }
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) {
+    return null;
+  }
+
+  const startToken = match[1];
+  const endToken = match[2];
+
+  if (startToken === "" && endToken !== "") {
+    const suffix = Number.parseInt(endToken, 10);
+    if (!Number.isFinite(suffix) || suffix <= 0) {
+      return { unsatisfiable: true as const };
+    }
+    const start = Math.max(0, totalSize - suffix);
+    return { start, end: totalSize - 1, unsatisfiable: false as const };
+  }
+
+  const start = startToken === "" ? 0 : Number.parseInt(startToken, 10);
+  let end = endToken === "" ? totalSize - 1 : Number.parseInt(endToken, 10);
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= totalSize || end < start) {
+    return { unsatisfiable: true as const };
+  }
+
+  end = Math.min(end, totalSize - 1);
+  return { start, end, unsatisfiable: false as const };
 };
 
 export class MeetingRecordingService {
@@ -621,6 +658,24 @@ export class MeetingRecordingService {
     };
   }
 
+  async getSummary(userId: string | undefined, meetingSessionId: string) {
+    const ownerId = requireUserId(userId);
+    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    return getConversationSummary(String(meeting._id));
+  }
+
+  async getTasks(userId: string | undefined, meetingSessionId: string) {
+    const ownerId = requireUserId(userId);
+    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    return listConversationTasks(String(meeting._id));
+  }
+
+  async getNotes(userId: string | undefined, meetingSessionId: string) {
+    const ownerId = requireUserId(userId);
+    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    return listConversationNotes(String(meeting._id));
+  }
+
   async getPlayback(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
@@ -645,6 +700,106 @@ export class MeetingRecordingService {
       expiresAt: signed.expiresAt.toISOString(),
       s3Key: meeting.finalRecordingS3Key,
     };
+  }
+
+  async openPlaybackStream(
+    userId: string | undefined,
+    meetingSessionId: string,
+    rangeHeader?: string,
+  ) {
+    const ownerId = requireUserId(userId);
+    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    if (!meeting.finalRecordingS3Key) {
+      throw new MeetingError(
+        MeetingErrorCode.MEETING_PLAYBACK_NOT_READY,
+        "Final recording is not available yet.",
+        409,
+        {
+          recordingAvailable: false,
+          videoMergeStatus: meeting.videoMergeStatus,
+        },
+      );
+    }
+
+    const key = String(meeting.finalRecordingS3Key);
+    const contentType = key.toLowerCase().endsWith(".mp4")
+      ? "video/mp4"
+      : key.toLowerCase().endsWith(".webm")
+        ? "video/webm"
+        : "application/octet-stream";
+
+    try {
+      const head = await headS3Object(key);
+      const totalSize = head.sizeBytes ?? 0;
+      if (!totalSize || totalSize <= 0) {
+        throw new MeetingError(
+          MeetingErrorCode.MEETING_PROCESSING_FAILED,
+          "Recording object is empty or unavailable.",
+          502,
+        );
+      }
+
+      const range = parseByteRange(rangeHeader, totalSize);
+      if (range?.unsatisfiable) {
+        throw new MeetingError(
+          MeetingErrorCode.MEETING_PROCESSING_FAILED,
+          "Requested range is not satisfiable.",
+          416,
+          { totalSize },
+        );
+      }
+
+      const s3Range =
+        range && !range.unsatisfiable ? `bytes=${range.start}-${range.end}` : undefined;
+      const object = await getS3Object({
+        key,
+        range: s3Range,
+      });
+
+      const resolvedType =
+        (head.contentType &&
+        head.contentType !== "application/octet-stream" &&
+        head.contentType !== "binary/octet-stream"
+          ? head.contentType
+          : null) ||
+        (object.ContentType &&
+        object.ContentType !== "application/octet-stream" &&
+        object.ContentType !== "binary/octet-stream"
+          ? object.ContentType
+          : null) ||
+        contentType;
+
+      if (range && !range.unsatisfiable) {
+        const length = range.end - range.start + 1;
+        return {
+          body: object.Body,
+          contentType: resolvedType,
+          contentLength: length,
+          contentRange: `bytes ${range.start}-${range.end}/${totalSize}`,
+          etag: object.ETag ?? head.etag,
+          statusCode: 206,
+        };
+      }
+
+      return {
+        body: object.Body,
+        contentType: resolvedType,
+        contentLength: totalSize,
+        contentRange: null,
+        etag: object.ETag ?? head.etag,
+        statusCode: 200,
+      };
+    } catch (error) {
+      if (error instanceof MeetingError) {
+        throw error;
+      }
+      throw new MeetingError(
+        MeetingErrorCode.MEETING_PROCESSING_FAILED,
+        "Unable to open recording stream.",
+        502,
+        { cause: error instanceof Error ? error.message : String(error) },
+      );
+    }
   }
 
   async scanStaleSessions() {
@@ -970,6 +1125,13 @@ export class MeetingRecordingService {
       processedChunks: meeting.processedChunks,
       failedChunks: meeting.failedChunks,
       recordingAvailable: Boolean(meeting.finalRecordingS3Key),
+      recordingPartial: Array.isArray(meeting.mergeMissingSequences)
+        ? meeting.mergeMissingSequences.length > 0
+        : false,
+      mergeMissingSequenceCount: Array.isArray(meeting.mergeMissingSequences)
+        ? meeting.mergeMissingSequences.length
+        : 0,
+      mergePresentChunkCount: meeting.mergePresentChunkCount ?? null,
       finalRecordingS3Key: meeting.finalRecordingS3Key || null,
       extensionVersion: meeting.extensionVersion,
       createdAt: meeting.createdAt,

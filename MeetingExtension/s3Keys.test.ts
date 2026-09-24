@@ -61,7 +61,7 @@ describe("meeting S3 keys", () => {
         userId: "user1",
         meetingSessionId: "sess1",
       }),
-      "meetings/user1/sess1/meeting.webm",
+      "meetings/user1/sess1/meeting.mp4",
     );
   });
 });

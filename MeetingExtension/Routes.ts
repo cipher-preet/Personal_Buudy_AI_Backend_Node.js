@@ -5,11 +5,15 @@ import {
   completeChunkController,
   createMeetingController,
   getMeetingController,
+  getMeetingNotesController,
   getMeetingPlaybackController,
+  getMeetingSummaryController,
+  getMeetingTasksController,
   getMeetingTranscriptController,
   listMeetingsController,
   presignChunkController,
   stopMeetingController,
+  streamMeetingPlaybackController,
 } from "./Controllers/MeetingRecording.Controller.js";
 
 const router = Router();
@@ -18,7 +22,11 @@ router.post("/", requireAuth, createMeetingController);
 router.get("/", requireAuth, listMeetingsController);
 router.get("/:sessionId", requireAuth, getMeetingController);
 router.get("/:sessionId/transcript", requireAuth, getMeetingTranscriptController);
+router.get("/:sessionId/summary", requireAuth, getMeetingSummaryController);
+router.get("/:sessionId/tasks", requireAuth, getMeetingTasksController);
+router.get("/:sessionId/notes", requireAuth, getMeetingNotesController);
 router.get("/:sessionId/playback", requireAuth, getMeetingPlaybackController);
+router.get("/:sessionId/playback/media", requireAuth, streamMeetingPlaybackController);
 router.post("/:sessionId/chunks/presign", requireAuth, presignChunkController);
 router.post(
   "/:sessionId/chunks/:sequence/complete",

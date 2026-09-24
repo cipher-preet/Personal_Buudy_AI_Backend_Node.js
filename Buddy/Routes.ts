@@ -18,6 +18,10 @@ import {
   getUserActiveSpaceController,
   getUserSpacesByUserIdController,
   startListningController,
+  updateSpaceController,
+  updateStagedNoteController,
+  updateStagedTaskController,
+  setStagedTaskStatusController,
 } from "./Controllers/Home.Controller.js";
 import {
   createReminderController,
@@ -49,6 +53,7 @@ const router = Router();
 
 router.post("/create-space", createSpaceController);
 router.post("/delete-space", requireAuth, deleteSpaceController);
+router.post("/update-space", requireAuth, updateSpaceController);
 router.get("/getuserspaces", getUserSpacesByUserIdController);
 router.get("/getUserActiveSpace", getUserActiveSpaceController);
 router.get(
@@ -64,10 +69,13 @@ router.get("/getNoteDateMarkersBySpace", getNoteDateMarkersBySpaceController);
 router.get("/getStagedNoteById", getStagedNoteByIdController);
 router.post("/delete-staged-note", requireAuth, deleteStagedNoteController);
 router.post("/create-staged-note", requireAuth, createStagedNoteController);
+router.post("/update-staged-note", requireAuth, updateStagedNoteController);
 router.get("/getStagedTasksBySpace", getStagedTasksBySpaceController);
 router.get("/getTaskDateMarkersBySpace", getTaskDateMarkersBySpaceController);
 router.post("/delete-staged-task", requireAuth, deleteStagedTaskController);
 router.post("/create-staged-task", requireAuth, createStagedTaskController);
+router.post("/update-staged-task", requireAuth, updateStagedTaskController);
+router.post("/set-staged-task-status", requireAuth, setStagedTaskStatusController);
 router.get("/getReminders", requireAuth, getRemindersController);
 router.post("/create-reminder", requireAuth, createReminderController);
 router.post("/update-reminder", requireAuth, updateReminderController);

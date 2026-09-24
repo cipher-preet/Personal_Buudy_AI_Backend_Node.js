@@ -16,6 +16,10 @@ import {
   getUserActiveSpaceRepository,
   getUserSpacesByUserIdRepository,
   startListningRepository,
+  updateSpaceRepository,
+  updateStagedNoteRepository,
+  updateStagedTaskRepository,
+  setStagedTaskStatusRepository,
 } from "../Repository/Home.repository.js";
 
 export const createSpaceService = async (spacename: string, userId: string) => {
@@ -36,6 +40,22 @@ export const deleteSpaceServices = async (
 ) => {
   try {
     const response = await deleteSpaceRepository(userId, spaceId);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//---------------------------------------------------------------------------------------------------
+
+export const updateSpaceServices = async (
+  userId: string,
+  spaceId: string,
+  updates: { spacename?: string; description?: string },
+) => {
+  try {
+    const response = await updateSpaceRepository(userId, spaceId, updates);
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
@@ -182,6 +202,22 @@ export const deleteStagedNoteServices = async (
 
 //----------------------------------------------------------------------------------------------
 
+export const updateStagedNoteServices = async (
+  userId: string,
+  noteId: string,
+  updates: { title?: string; body?: string; dateKey?: string },
+) => {
+  try {
+    const response = await updateStagedNoteRepository(userId, noteId, updates);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
 export const getStagedTasksBySpaceServices = async (
   userId: string,
   spaceId: string,
@@ -221,6 +257,43 @@ export const deleteStagedTaskServices = async (
 
 //----------------------------------------------------------------------------------------------
 
+export const updateStagedTaskServices = async (
+  userId: string,
+  taskId: string,
+  updates: {
+    title?: string;
+    description?: string;
+    dateKey?: string;
+    priority?: string;
+  },
+) => {
+  try {
+    const response = await updateStagedTaskRepository(userId, taskId, updates);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const setStagedTaskStatusServices = async (
+  userId: string,
+  taskId: string,
+  done: boolean,
+) => {
+  try {
+    const response = await setStagedTaskStatusRepository(userId, taskId, done);
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
 export const createStagedNoteServices = async (
   userId: string,
   spaceId: string,
@@ -251,6 +324,7 @@ export const createStagedTaskServices = async (
   title: string,
   description: string,
   dateKey?: string,
+  priority?: string,
 ) => {
   try {
     const response = await createStagedTaskRepository(
@@ -259,6 +333,7 @@ export const createStagedTaskServices = async (
       title,
       description,
       dateKey,
+      priority,
     );
     return response;
   } catch (error) {
