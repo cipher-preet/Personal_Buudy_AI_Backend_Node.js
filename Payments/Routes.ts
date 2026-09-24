@@ -3,6 +3,7 @@ import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 import {
   createPaymentLinkController,
   createPaymentOrderController,
+  getPaymentStatusController,
   verifyPaymentController,
 } from "./Controllers/Payment.Controller.js";
 
@@ -11,5 +12,6 @@ const router = Router();
 router.post("/order", requireAuth, createPaymentOrderController);
 router.post("/payment-link", requireAuth, createPaymentLinkController);
 router.post("/verify", requireAuth, verifyPaymentController);
+router.get("/status", requireAuth, getPaymentStatusController);
 
 export default router;

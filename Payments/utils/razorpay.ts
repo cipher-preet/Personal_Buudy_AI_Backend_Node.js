@@ -98,6 +98,12 @@ export const createRazorpayOrder = (payload: {
 export const fetchRazorpayPayment = (paymentId: string) =>
   requestRazorpay<Record<string, any>>(`/payments/${paymentId}`);
 
+export const fetchRazorpayOrder = (orderId: string) =>
+  requestRazorpay<Record<string, any>>(`/orders/${orderId}`);
+
+export const fetchRazorpayOrderPayments = (orderId: string) =>
+  requestRazorpay<{ items?: Array<Record<string, any>> }>(`/orders/${orderId}/payments`);
+
 export const createRazorpayPaymentLink = (payload: {
   amount: number;
   currency: string;

@@ -54,6 +54,51 @@ describe("meeting recording service contracts", () => {
     assert.equal(canAcceptUploads(MeetingStatus.READY), false);
   });
 
+  it("still arms video merge when conversation status already advanced", () => {
+    // Regression: AI status sync moved meeting to PROCESSING while videoMergeStatus
+    // stayed NOT_STARTED — scanner must still find these after the upload grace window.
+    const needsMergeAdvance = (meeting: {
+      status: string;
+      pipelineStopEnqueued: boolean;
+      videoMergeStatus: string | null;
+      finalRecordingS3Key: string | null;
+      stopRequestedAt: Date | null;
+    }) => {
+      if (!meeting.stopRequestedAt || meeting.finalRecordingS3Key) {
+        return false;
+      }
+      const mergeStuck =
+        !meeting.videoMergeStatus ||
+        meeting.videoMergeStatus === "NOT_STARTED" ||
+        meeting.videoMergeStatus === "FAILED";
+      const uploadsPending =
+        (meeting.status === MeetingStatus.STOP_REQUESTED ||
+          meeting.status === MeetingStatus.WAITING_FOR_UPLOADS) &&
+        !meeting.pipelineStopEnqueued;
+      return mergeStuck || uploadsPending;
+    };
+    assert.equal(
+      needsMergeAdvance({
+        status: MeetingStatus.PROCESSING,
+        pipelineStopEnqueued: true,
+        videoMergeStatus: "NOT_STARTED",
+        finalRecordingS3Key: null,
+        stopRequestedAt: new Date(Date.now() - 200_000),
+      }),
+      true,
+    );
+    assert.equal(
+      needsMergeAdvance({
+        status: MeetingStatus.READY,
+        pipelineStopEnqueued: true,
+        videoMergeStatus: "COMPLETED",
+        finalRecordingS3Key: "meetings/u/m/final.mp4",
+        stopRequestedAt: new Date(),
+      }),
+      false,
+    );
+  });
+
   it("treats duplicate complete as idempotent per media kind", () => {
     const enqueued = new Set<string>();
     const complete = (sessionId: string, sequence: number, mediaKind = "muxed") => {

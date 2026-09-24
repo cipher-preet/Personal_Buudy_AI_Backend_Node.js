@@ -5,6 +5,7 @@ import { isPlanCode } from "../../Plans/Modals/Plan.modal.js";
 import {
   createPaymentLinkService,
   createPaymentOrderService,
+  getPaymentStatusService,
   handlePaymentWebhookService,
   verifyPaymentService,
 } from "../Services/Payment.services.js";
@@ -144,6 +145,43 @@ export const createPaymentLinkController = async (
       email: typeof email === "string" ? email : undefined,
       phone: phone ? String(phone) : undefined,
       interval: parseBillingInterval(interval),
+    });
+
+    if (!response.data) {
+      return ErrorResponse(res, response.status, response.message);
+    }
+
+    return SuccessResponse(res, response.status, response.data);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPaymentStatusController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = String(req.query.userId || req.body?.userId || "");
+    const orderId = String(req.query.orderId || req.body?.orderId || "");
+    const authUserId = req.authUser?.id || req.session?.user?.id;
+
+    if (!userId || !orderId) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "User id and order id are required.",
+      );
+    }
+
+    if (!authUserId || String(authUserId) !== String(userId)) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    const response = await getPaymentStatusService({
+      userId,
+      orderId,
     });
 
     if (!response.data) {

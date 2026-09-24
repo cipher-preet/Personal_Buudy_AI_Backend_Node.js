@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 import { CreateSpace } from "../../Buddy/Modals/Home.Modal.js";
 import { MeetingSession } from "../Modals/MeetingSession.Modal.js";
-import { DEFAULT_MEETINGS_SPACE_NAME, MeetingStatus } from "../constants.js";
+import { DEFAULT_MEETINGS_SPACE_NAME, MeetingStatus, VideoMergeStatus } from "../constants.js";
 import type { MeetingStatus as MeetingStatusType } from "../constants.js";
 
 const userFilter = (userId: string) => {
@@ -139,12 +139,26 @@ export const findMeetingsNeedingUploadAdvance = async ({
   limit?: number;
 }) => {
   return MeetingSession.find({
-    status: {
-      $in: [MeetingStatus.STOP_REQUESTED, MeetingStatus.WAITING_FOR_UPLOADS],
-    },
-    pipelineStopEnqueued: { $ne: true },
     expectedFinalSequence: { $ne: null },
     stopRequestedAt: { $ne: null, $lte: cutoff },
+    $or: [
+      {
+        // AI / finalization never armed
+        status: {
+          $in: [MeetingStatus.STOP_REQUESTED, MeetingStatus.WAITING_FOR_UPLOADS],
+        },
+        pipelineStopEnqueued: { $ne: true },
+      },
+      {
+        // Playback stuck: conversation status may have advanced, but merge never started
+        finalRecordingS3Key: null,
+        $or: [
+          { videoMergeStatus: VideoMergeStatus.NOT_STARTED },
+          { videoMergeStatus: null },
+          { videoMergeStatus: { $exists: false } },
+        ],
+      },
+    ],
   })
     .sort({ stopRequestedAt: 1 })
     .limit(limit);

@@ -549,10 +549,9 @@ export class MeetingRecordingService {
     meeting.lastReceivedSequence = Math.max(meeting.lastReceivedSequence || 0, sequence);
     meeting.totalBytes = (meeting.totalBytes || 0) + (claimed.enqueuedNow ? head.sizeBytes : 0);
     await refreshChunkCounters(meeting);
-    if (
-      meeting.status === MeetingStatus.STOP_REQUESTED ||
-      meeting.status === MeetingStatus.WAITING_FOR_UPLOADS
-    ) {
+    // After STOP, always try to advance — even if conversation status sync
+    // already moved the session past WAITING_FOR_UPLOADS (merge can still be stuck).
+    if (meeting.stopRequestedAt || meeting.expectedFinalSequence != null) {
       await this.maybeAdvanceAfterUploads(meeting, config);
     } else {
       await meeting.save();
@@ -639,6 +638,17 @@ export class MeetingRecordingService {
     const conversation = await getConversation(String(meeting._id));
     const artifacts = await getArtifactCounts(String(meeting._id));
     await this.syncFromConversation(meeting, conversation);
+    if (
+      meeting.stopRequestedAt &&
+      meeting.expectedFinalSequence != null &&
+      !meeting.finalRecordingS3Key
+    ) {
+      try {
+        await this.ensureVideoMergeEnqueued(meeting, getMeetingConfig(), "detail");
+      } catch {
+        // Detail view should still return; playback will retry.
+      }
+    }
     return {
       ...this.toDetail(meeting.toObject()),
       artifacts,
@@ -679,6 +689,18 @@ export class MeetingRecordingService {
   async getPlayback(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const config = getMeetingConfig();
+    if (!meeting.finalRecordingS3Key) {
+      try {
+        await this.ensureVideoMergeEnqueued(meeting, config, "playback");
+      } catch (error) {
+        logMeetingEvent("meeting_playback_advance_failed", {
+          meetingSessionId: String(meeting._id),
+          message: error instanceof Error ? error.message : "advance failed",
+          videoMergeStatus: meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED,
+        });
+      }
+    }
     if (!meeting.finalRecordingS3Key) {
       throw new MeetingError(
         MeetingErrorCode.MEETING_PLAYBACK_NOT_READY,
@@ -686,11 +708,10 @@ export class MeetingRecordingService {
         409,
         {
           recordingAvailable: false,
-          videoMergeStatus: meeting.videoMergeStatus,
+          videoMergeStatus: meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED,
         },
       );
     }
-    const config = getMeetingConfig();
     const signed = await this.s3.presignGet({
       key: meeting.finalRecordingS3Key,
       expiresInSeconds: config.playbackTtlSeconds,
@@ -863,6 +884,108 @@ export class MeetingRecordingService {
     return Date.now() - stoppedAt >= config.uploadWaitTimeoutSeconds * 1000;
   }
 
+  /**
+   * Force-enqueue video merge for playback recovery.
+   * Does not wait for the full upload grace window when Stop already happened
+   * and at least one muxed/video chunk exists.
+   */
+  private async ensureVideoMergeEnqueued(
+    meeting: mongoose.Document & Record<string, any>,
+    config: ReturnType<typeof getMeetingConfig>,
+    reason: string,
+  ) {
+    if (meeting.finalRecordingS3Key) {
+      return;
+    }
+    if (!config.videoFinalizationEnabled) {
+      logMeetingEvent("meeting_video_merge_skipped", {
+        meetingSessionId: String(meeting._id),
+        reason: "video_finalization_disabled",
+        source: reason,
+      });
+      return;
+    }
+
+    // Also advance AI/finalization when possible.
+    await this.maybeAdvanceAfterUploads(meeting, config);
+    if (meeting.finalRecordingS3Key) {
+      return;
+    }
+
+    const expected = Number(meeting.expectedFinalSequence || 0);
+    const uploaded = await listUploadedSequences(meeting._id);
+    const kindOf = (row: { mediaKind?: string | null }) =>
+      row.mediaKind || MeetingMediaKind.MUXED;
+    const videoSeqs = uploaded
+      .filter(
+        (row: { mediaKind?: string | null }) =>
+          kindOf(row) === MeetingMediaKind.VIDEO || kindOf(row) === MeetingMediaKind.MUXED,
+      )
+      .map((row: { sequence: number }) => row.sequence);
+    const status = String(meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED);
+    const pendingStale =
+      status === VideoMergeStatus.PENDING &&
+      meeting.updatedAt &&
+      Date.now() - new Date(meeting.updatedAt).getTime() > 120_000;
+    const canEnqueue =
+      status === VideoMergeStatus.NOT_STARTED ||
+      status === VideoMergeStatus.FAILED ||
+      !meeting.videoMergeStatus ||
+      pendingStale;
+
+    logMeetingEvent("meeting_playback_merge_check", {
+      meetingSessionId: String(meeting._id),
+      source: reason,
+      status: meeting.status,
+      videoMergeStatus: status,
+      expectedFinalSequence: expected || null,
+      stopRequestedAt: meeting.stopRequestedAt ? new Date(meeting.stopRequestedAt).toISOString() : null,
+      uploadedVideoCount: videoSeqs.length,
+      canEnqueue,
+      videoFinalizationEnabled: config.videoFinalizationEnabled,
+    });
+
+    if (!expected || videoSeqs.length === 0 || !canEnqueue) {
+      return;
+    }
+    if (!meeting.stopRequestedAt && !meeting.endedAt) {
+      // Still recording — do not merge yet.
+      return;
+    }
+
+    meeting.videoMergeStatus = VideoMergeStatus.PENDING;
+    await this.queue.publish(
+      config.meetingMergeStream,
+      buildEnvelope({
+        eventId: `meeting:${String(meeting._id)}:merge:${Date.now()}`,
+        eventType: "meeting.video.merge.requested",
+        userId: String(meeting.userId),
+        spaceId: spaceIdForEvent(meeting.spaceId),
+        conversationId: String(meeting._id),
+        payload: {
+          meetingSessionId: String(meeting._id),
+          userId: String(meeting.userId),
+          expectedFinalSequence: expected,
+          allowMissingSequences: true,
+          s3Prefix: config.s3Prefix,
+          finalRecordingS3Key: buildFinalRecordingS3Key({
+            prefix: config.s3Prefix,
+            userId: String(meeting.userId),
+            meetingSessionId: String(meeting._id),
+          }),
+        },
+      }),
+    );
+    await meeting.save();
+    logMeetingEvent("meeting_video_merge_enqueued", {
+      meetingSessionId: String(meeting._id),
+      userId: String(meeting.userId),
+      source: reason,
+      uploadedVideoCount: videoSeqs.length,
+      requeue: pendingStale,
+    });
+  }
+
   private async maybeAdvanceAfterUploads(
     meeting: mongoose.Document & Record<string, any>,
     config: ReturnType<typeof getMeetingConfig>,
@@ -899,9 +1022,14 @@ export class MeetingRecordingService {
     const audioReady =
       Boolean(expected) &&
       (missingAudioAll.length === 0 || (timedOut && hasAnyAudio));
+    // After STOP grace (or when AI already started), merge whatever video we have.
+    // Python concat is gap-tolerant — do not block playback on never-uploaded sequences.
     const videoReady =
       Boolean(expected) &&
-      (missingVideoAll.length === 0 || (timedOut && hasAnyVideo));
+      hasAnyVideo &&
+      (missingVideoAll.length === 0 ||
+        timedOut ||
+        Boolean(meeting.pipelineStopEnqueued && meeting.stopRequestedAt));
 
     await refreshChunkCounters(meeting);
     meeting.totalChunks = expected
@@ -963,13 +1091,15 @@ export class MeetingRecordingService {
       expected &&
       videoReady &&
       config.videoFinalizationEnabled &&
-      (meeting.videoMergeStatus === VideoMergeStatus.NOT_STARTED || !meeting.videoMergeStatus)
+      (meeting.videoMergeStatus === VideoMergeStatus.NOT_STARTED ||
+        !meeting.videoMergeStatus ||
+        meeting.videoMergeStatus === VideoMergeStatus.FAILED)
     ) {
       meeting.videoMergeStatus = VideoMergeStatus.PENDING;
       await this.queue.publish(
         config.meetingMergeStream,
         buildEnvelope({
-          eventId: `meeting:${String(meeting._id)}:merge`,
+          eventId: `meeting:${String(meeting._id)}:merge:${Date.now()}`,
           eventType: "meeting.video.merge.requested",
           userId: String(meeting.userId),
           spaceId: spaceIdForEvent(meeting.spaceId),
@@ -978,7 +1108,7 @@ export class MeetingRecordingService {
             meetingSessionId: String(meeting._id),
             userId: String(meeting.userId),
             expectedFinalSequence: expected,
-            allowMissingSequences: timedOut && missingVideoAll.length > 0,
+            allowMissingSequences: missingVideoAll.length > 0,
             s3Prefix: config.s3Prefix,
             finalRecordingS3Key: buildFinalRecordingS3Key({
               prefix: config.s3Prefix,
@@ -991,6 +1121,7 @@ export class MeetingRecordingService {
       logMeetingEvent("meeting_video_merge_enqueued", {
         meetingSessionId: String(meeting._id),
         userId: String(meeting.userId),
+        missingVideoCount: missingVideoAll.length,
       });
     }
 
@@ -1032,6 +1163,10 @@ export class MeetingRecordingService {
         abandonedMissingAudio: timedOut ? missingAudioAll.length : 0,
       });
       meeting.status = MeetingStatus.PROCESSING;
+      await meeting.save();
+    } else {
+      // Conversation may already be PROCESSING while merge was still NOT_STARTED —
+      // persist pipelineStopEnqueued / videoMergeStatus / PENDING from above.
       await meeting.save();
     }
 

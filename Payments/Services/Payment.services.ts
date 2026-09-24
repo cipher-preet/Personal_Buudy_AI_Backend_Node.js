@@ -6,6 +6,8 @@ import Payment from "../Modals/Payment.modal.js";
 import {
   createRazorpayOrder,
   createRazorpayPaymentLink,
+  fetchRazorpayOrder,
+  fetchRazorpayOrderPayments,
   fetchRazorpayPayment,
   getRazorpayKeyId,
   verifyCheckoutSignature,
@@ -324,6 +326,16 @@ export const verifyPaymentService = async ({
     };
   }
 
+  if (payment.status === "paid") {
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        message: "Payment already verified and plan upgraded.",
+        payment,
+      },
+    };
+  }
+
   payment.status = "paid";
   payment.razorpayPaymentId = razorpayPaymentId;
   payment.razorpaySignature = razorpaySignature;
@@ -372,10 +384,13 @@ export const handlePaymentWebhookService = async (
 
   payment.webhookEvents.push(event);
 
+  const alreadyPaid = payment.status === "paid";
+
   if (
-    event === "payment.captured" ||
-    event === "order.paid" ||
-    event === "payment_link.paid"
+    !alreadyPaid &&
+    (event === "payment.captured" ||
+      event === "order.paid" ||
+      event === "payment_link.paid")
   ) {
     payment.status = "paid";
     payment.razorpayPaymentId = paymentEntity?.id || payment.razorpayPaymentId;
@@ -390,7 +405,7 @@ export const handlePaymentWebhookService = async (
     );
   }
 
-  if (event === "payment.failed") {
+  if (!alreadyPaid && event === "payment.failed") {
     payment.status = "failed";
     payment.razorpayPaymentId = paymentEntity?.id || payment.razorpayPaymentId;
     payment.rawPayment = paymentEntity || payment.rawPayment;
@@ -398,4 +413,125 @@ export const handlePaymentWebhookService = async (
   }
 
   await payment.save();
+};
+
+export const getPaymentStatusService = async ({
+  userId,
+  orderId,
+}: {
+  userId: string;
+  orderId: string;
+}) => {
+  if (!mongoose.isValidObjectId(userId) || !orderId) {
+    return {
+      status: STATUS_CODE.BAD_REQUEST,
+      message: "User id and order id are required.",
+    };
+  }
+
+  const payment = await Payment.findOne({
+    userId,
+    razorpayOrderId: orderId,
+  });
+
+  if (!payment) {
+    return {
+      status: STATUS_CODE.NOT_FOUND,
+      message: "Payment order not found.",
+    };
+  }
+
+  if (payment.status === "paid") {
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        paid: true,
+        status: payment.status,
+        planCode: payment.planCode,
+        message: "Payment already confirmed and plan upgraded.",
+        paymentId: payment._id,
+      },
+    };
+  }
+
+  try {
+    const order = await fetchRazorpayOrder(orderId);
+    const orderStatus = String(order.status || "");
+
+    if (orderStatus === "paid") {
+      let paymentEntity: Record<string, any> | undefined;
+
+      try {
+        const orderPayments = await fetchRazorpayOrderPayments(orderId);
+        paymentEntity = orderPayments.items?.find((item) =>
+          ["captured", "authorized"].includes(String(item.status || "")),
+        );
+      } catch {
+        paymentEntity = undefined;
+      }
+
+      if (paymentEntity?.id) {
+        try {
+          paymentEntity = await fetchRazorpayPayment(String(paymentEntity.id));
+        } catch {
+          // Keep the order payment summary if the detail fetch fails.
+        }
+      }
+
+      payment.status = "paid";
+      payment.razorpayPaymentId =
+        paymentEntity?.id || payment.razorpayPaymentId;
+      payment.rawPayment = paymentEntity || payment.rawPayment || order;
+      payment.paidAt = payment.paidAt || new Date();
+      await payment.save();
+
+      const subscription = await activatePlanForUser(
+        userId,
+        payment.planId,
+        payment.planCode as PlanCode,
+        payment.billingInterval || "monthly",
+      );
+
+      return {
+        status: STATUS_CODE.OK,
+        data: {
+          paid: true,
+          status: "paid",
+          planCode: payment.planCode,
+          message: "Payment confirmed and plan upgraded.",
+          paymentId: payment._id,
+          subscription,
+        },
+      };
+    }
+
+    if (orderStatus === "attempted" && payment.status === "created") {
+      payment.status = "attempted";
+      await payment.save();
+    }
+  } catch (error: any) {
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        paid: false,
+        status: payment.status,
+        planCode: payment.planCode,
+        message:
+          error?.message ||
+          "Unable to refresh payment status from Razorpay right now.",
+        paymentId: payment._id,
+      },
+    };
+  }
+
+  return {
+    status: STATUS_CODE.OK,
+    data: {
+      paid: false,
+      status: payment.status,
+      planCode: payment.planCode,
+      message: `Payment is ${payment.status}.`,
+      paymentId: payment._id,
+    },
+  };
 };
