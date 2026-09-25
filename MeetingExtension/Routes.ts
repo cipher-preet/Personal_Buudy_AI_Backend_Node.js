@@ -5,6 +5,7 @@ import {
   completeChunkController,
   createMeetingController,
   getMeetingController,
+  assignMeetingSpaceController,
   getMeetingNotesController,
   getMeetingPlaybackController,
   getMeetingSummaryController,
@@ -21,6 +22,7 @@ const router = Router();
 router.post("/", requireAuth, createMeetingController);
 router.get("/", requireAuth, listMeetingsController);
 router.get("/:sessionId", requireAuth, getMeetingController);
+router.patch("/:sessionId/space", requireAuth, assignMeetingSpaceController);
 router.get("/:sessionId/transcript", requireAuth, getMeetingTranscriptController);
 router.get("/:sessionId/summary", requireAuth, getMeetingSummaryController);
 router.get("/:sessionId/tasks", requireAuth, getMeetingTasksController);

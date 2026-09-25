@@ -316,6 +316,68 @@ const conversationScopedFilter = (conversationId: string) => {
   };
 };
 
+/**
+ * Reassign (or clear) spaceId on the meeting conversation and all linked
+ * notes/tasks/chunks in one parallel bulk update. Idempotent when values match.
+ */
+export const assignConversationSpace = async ({
+  conversationId,
+  spaceId,
+}: {
+  conversationId: string;
+  spaceId: mongoose.Types.ObjectId | null;
+}) => {
+  const conversationFilter = { _id: idFilter(conversationId) as any };
+  const chunkFilter = { conversationId: idFilter(conversationId) as any };
+  const artifactFilter = conversationScopedFilter(conversationId);
+  const now = new Date();
+  const spaceValue = spaceId ?? null;
+
+  const [
+    conversation,
+    audioChunks,
+    transcriptChunks,
+    notes,
+    stagedNotes,
+    tasks,
+    stagedTasks,
+  ] = await Promise.all([
+    aiCollections().conversations.updateOne(conversationFilter, {
+      $set: {
+        spaceId: spaceValue,
+        updatedAt: now,
+        lastActivityAt: now,
+      },
+    }),
+    aiCollections().audioChunks.updateMany(chunkFilter, {
+      $set: { spaceId: spaceValue, updatedAt: now },
+    }),
+    aiCollections().transcriptChunks.updateMany(chunkFilter, {
+      $set: { spaceId: spaceValue, updatedAt: now },
+    }),
+    aiCollections().notes.updateMany(artifactFilter, {
+      $set: { spaceId: spaceValue, updatedAt: now },
+    }),
+    aiCollections().stagedNotes.updateMany(artifactFilter, {
+      $set: { spaceId: spaceValue, updatedAt: now },
+    }),
+    aiCollections().tasks.updateMany(artifactFilter, {
+      $set: { spaceId: spaceValue, updatedAt: now },
+    }),
+    aiCollections().stagedTasks.updateMany(artifactFilter, {
+      $set: { spaceId: spaceValue, updatedAt: now },
+    }),
+  ]);
+
+  return {
+    conversationMatched: conversation.matchedCount,
+    audioChunksModified: audioChunks.modifiedCount,
+    transcriptChunksModified: transcriptChunks.modifiedCount,
+    notesModified: notes.modifiedCount + stagedNotes.modifiedCount,
+    tasksModified: tasks.modifiedCount + stagedTasks.modifiedCount,
+  };
+};
+
 const toIso = (value: unknown) => {
   if (!value) {
     return null;

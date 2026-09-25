@@ -127,6 +127,19 @@ export const getMeetingNotesController = async (req: CustomRequest, res: Respons
   );
 };
 
+export const assignMeetingSpaceController = async (req: CustomRequest, res: Response) => {
+  if (!isMeetingExtensionEnabled()) {
+    return unavailable(res);
+  }
+  return handle(res, () =>
+    meetingRecordingService.assignSpace(
+      ownerId(req),
+      param(req.params.sessionId),
+      req.body || {},
+    ),
+  );
+};
+
 export const getMeetingPlaybackController = async (req: CustomRequest, res: Response) => {
   if (!isMeetingExtensionEnabled()) {
     return unavailable(res);

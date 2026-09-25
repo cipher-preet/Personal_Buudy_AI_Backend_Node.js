@@ -77,6 +77,7 @@ const meetingSessionSchema = new mongoose.Schema(
 );
 
 meetingSessionSchema.index({ userId: 1, createdAt: -1 });
+meetingSessionSchema.index({ userId: 1, spaceId: 1, _id: -1 });
 meetingSessionSchema.index({ status: 1, updatedAt: 1 });
 meetingSessionSchema.index(
   { userId: 1, clientRequestId: 1 },

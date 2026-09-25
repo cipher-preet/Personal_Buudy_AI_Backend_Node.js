@@ -20,6 +20,7 @@ import {
 import { MeetingError } from "../errors.js";
 import { logMeetingEvent } from "../log.js";
 import {
+  assignConversationSpace,
   getArtifactCounts,
   getConversation,
   getConversationSummary,
@@ -625,10 +626,30 @@ export class MeetingRecordingService {
     const limitRaw = Number.parseInt(String(query.limit || "20"), 10);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 50) : 20;
     const cursor = typeof query.cursor === "string" ? query.cursor : undefined;
-    const page = await listMeetingsForUser({ userId: ownerId, limit, cursor });
+    const spaceIdFilter = parseOptionalObjectId(query.spaceId, "spaceId");
+
+    if (spaceIdFilter) {
+      const ownedSpace = await findOwnedSpace(ownerId, spaceIdFilter);
+      if (!ownedSpace) {
+        throw new MeetingError(
+          MeetingErrorCode.MEETING_SPACE_NOT_FOUND,
+          "Space not found or does not belong to this user.",
+          404,
+        );
+      }
+    }
+
+    const page = await listMeetingsForUser({
+      userId: ownerId,
+      limit,
+      cursor,
+      spaceId: spaceIdFilter,
+    });
+
     return {
       items: page.items.map((item: Record<string, any>) => this.toDetail(item)),
       nextCursor: page.nextCursor,
+      spaceId: spaceIdFilter || null,
     };
   }
 
@@ -684,6 +705,100 @@ export class MeetingRecordingService {
     const ownerId = requireUserId(userId);
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     return listConversationNotes(String(meeting._id));
+  }
+
+  /**
+   * Associate (or clear) a meeting with a space. Updates meeting_sessions plus
+   * conversation / chunks / notes / stagedNotes / tasks / stagedTasks spaceId
+   * in one pass. Pass spaceId: null to detach.
+   */
+  async assignSpace(
+    userId: string | undefined,
+    meetingSessionId: string,
+    body: Record<string, unknown>,
+  ) {
+    const ownerId = requireUserId(userId);
+    const meeting = await requireOwnedMeeting(
+      ownerId,
+      parseObjectId(meetingSessionId, "sessionId"),
+    );
+
+    if (!body || !Object.prototype.hasOwnProperty.call(body, "spaceId")) {
+      throw new MeetingError(
+        MeetingErrorCode.MEETING_INVALID_INPUT,
+        "spaceId is required. Pass null to remove the association.",
+        400,
+      );
+    }
+
+    let nextSpaceId: mongoose.Types.ObjectId | null = null;
+    let spaceName: string | null = null;
+
+    if (body.spaceId !== null && body.spaceId !== undefined && body.spaceId !== "") {
+      const spaceIdStr = parseObjectId(body.spaceId, "spaceId");
+      const space = await findOwnedSpace(ownerId, spaceIdStr);
+      if (!space) {
+        throw new MeetingError(
+          MeetingErrorCode.MEETING_SPACE_NOT_FOUND,
+          "Space not found or does not belong to this user.",
+          404,
+        );
+      }
+      nextSpaceId = new mongoose.Types.ObjectId(spaceIdStr);
+      spaceName = String((space as { spacename?: string }).spacename || "Space");
+    }
+
+    const currentSpaceId = meeting.spaceId ? String(meeting.spaceId) : null;
+    const nextSpaceIdStr = nextSpaceId ? String(nextSpaceId) : null;
+
+    if (currentSpaceId === nextSpaceIdStr) {
+      if (nextSpaceIdStr && !spaceName) {
+        const space = await findOwnedSpace(ownerId, nextSpaceIdStr);
+        spaceName = space
+          ? String((space as { spacename?: string }).spacename || "Space")
+          : null;
+      }
+      return {
+        meetingSessionId: String(meeting._id),
+        spaceId: nextSpaceIdStr,
+        spaceName,
+        unchanged: true,
+        updated: {
+          conversation: false,
+          notes: 0,
+          tasks: 0,
+        },
+      };
+    }
+
+    meeting.spaceId = nextSpaceId;
+    await meeting.save();
+
+    const cascade = await assignConversationSpace({
+      conversationId: String(meeting._id),
+      spaceId: nextSpaceId,
+    });
+
+    logMeetingEvent("meeting_space_assigned", {
+      meetingSessionId: String(meeting._id),
+      userId: ownerId,
+      spaceId: nextSpaceIdStr || "",
+      previousSpaceId: currentSpaceId || "",
+      notesModified: cascade.notesModified,
+      tasksModified: cascade.tasksModified,
+    });
+
+    return {
+      meetingSessionId: String(meeting._id),
+      spaceId: nextSpaceIdStr,
+      spaceName,
+      unchanged: false,
+      updated: {
+        conversation: cascade.conversationMatched > 0,
+        notes: cascade.notesModified,
+        tasks: cascade.tasksModified,
+      },
+    };
   }
 
   async getPlayback(userId: string | undefined, meetingSessionId: string) {

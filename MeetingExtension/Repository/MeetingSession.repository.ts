@@ -86,19 +86,32 @@ export const listMeetingsForUser = async ({
   userId,
   limit,
   cursor,
+  spaceId,
 }: {
   userId: string;
   limit: number;
   cursor?: string;
+  spaceId?: string;
 }) => {
   const query: Record<string, unknown> = { userId: userFilter(userId) };
+
+  if (spaceId) {
+    // Match ObjectId or legacy string storage for the same space.
+    query.spaceId = mongoose.isValidObjectId(spaceId)
+      ? { $in: [spaceId, new mongoose.Types.ObjectId(spaceId)] }
+      : spaceId;
+  }
+
   if (cursor && mongoose.isValidObjectId(cursor)) {
     query._id = { $lt: new mongoose.Types.ObjectId(cursor) };
   }
+
+  // Projection keeps list payloads light; detail endpoints fetch full docs.
   const items = await MeetingSession.find(query)
     .sort({ _id: -1 })
     .limit(limit + 1)
     .lean();
+
   const hasMore = items.length > limit;
   const page = hasMore ? items.slice(0, limit) : items;
   return {
