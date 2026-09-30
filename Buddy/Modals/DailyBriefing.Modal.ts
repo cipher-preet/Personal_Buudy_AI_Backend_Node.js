@@ -24,6 +24,35 @@ const taskCardSchema = new mongoose.Schema(
     id: { type: String, required: true },
     title: { type: String, default: "" },
     meta: { type: String, default: "" },
+    priority: { type: String, default: "" },
+    due: { type: String, default: "" },
+    dueStatus: { type: String, default: "" },
+    space: { type: String, default: "" },
+    reason: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const focusItemSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    title: { type: String, default: "" },
+    why: { type: String, default: "" },
+    timeHint: { type: String, default: "" },
+    taskId: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const agendaCardSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    kind: { type: String, default: "" },
+    time: { type: String, default: "" },
+    endTime: { type: String, default: "" },
+    title: { type: String, default: "" },
+    location: { type: String, default: "" },
+    prep: { type: String, default: "" },
   },
   { _id: false },
 );
@@ -91,6 +120,11 @@ const dailyBriefingSchema = new mongoose.Schema(
     tasks: { type: [taskCardSchema], default: [] },
     meetings: { type: [meetingCardSchema], default: [] },
     missedCandidates: { type: [briefingItemSchema], default: [] },
+    focus: { type: [focusItemSchema], default: [] },
+    agenda: { type: [agendaCardSchema], default: [] },
+    risks: { type: [briefingItemSchema], default: [] },
+    stats: { type: mongoose.Schema.Types.Mixed, default: {} },
+    planDateKey: { type: String, default: "" },
     sourceStats: { type: mongoose.Schema.Types.Mixed, default: {} },
     pipelineVersion: { type: String, default: "daily-briefing-v1" },
     skipReason: { type: String, default: null },

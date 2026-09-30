@@ -65,7 +65,7 @@ const forceGenerateDailyBriefingController = async (
     const period =
       periodRaw === "yesterday" || periodRaw === "today"
         ? periodRaw
-        : "today";
+        : "yesterday";
 
     const result = await forceGenerateDailyBriefingForUser(userId, {
       date: parsedDate.value,

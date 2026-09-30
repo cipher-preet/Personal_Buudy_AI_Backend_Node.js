@@ -46,7 +46,47 @@ const mapTask = (item: Record<string, any>) => ({
   id: String(item?.id ?? ""),
   title: String(item?.title ?? ""),
   meta: String(item?.meta ?? ""),
+  priority: String(item?.priority ?? ""),
+  due: String(item?.due ?? ""),
+  dueStatus: String(item?.dueStatus ?? ""),
+  space: String(item?.space ?? ""),
+  reason: String(item?.reason ?? ""),
 });
+
+const mapFocus = (item: Record<string, any>) => ({
+  id: String(item?.id ?? ""),
+  title: String(item?.title ?? ""),
+  why: String(item?.why ?? ""),
+  timeHint: String(item?.timeHint ?? ""),
+  taskId: String(item?.taskId ?? ""),
+});
+
+const mapAgenda = (item: Record<string, any>) => ({
+  id: String(item?.id ?? ""),
+  kind: String(item?.kind ?? ""),
+  time: String(item?.time ?? ""),
+  endTime: String(item?.endTime ?? ""),
+  title: String(item?.title ?? ""),
+  location: String(item?.location ?? ""),
+  prep: String(item?.prep ?? ""),
+});
+
+const STAT_KEYS = [
+  "completedTasks",
+  "openTasks",
+  "overdueTasks",
+  "dueToday",
+  "meetings",
+  "reminders",
+  "conversations",
+  "chatMessages",
+  "notes",
+] as const;
+
+const mapStats = (value: Record<string, any> | undefined) =>
+  Object.fromEntries(
+    STAT_KEYS.map((key) => [key, Number(value?.[key] ?? 0)]),
+  ) as Record<(typeof STAT_KEYS)[number], number>;
 
 const mapMeeting = (item: Record<string, any>) => ({
   id: String(item?.id ?? ""),
@@ -108,6 +148,15 @@ export const mapBriefing = (doc: Record<string, any>) => ({
   meetings: Array.isArray(doc.meetings)
     ? doc.meetings.map((item: Record<string, any>) => mapMeeting(item))
     : [],
+  focus: Array.isArray(doc.focus)
+    ? doc.focus.map((item: Record<string, any>) => mapFocus(item))
+    : [],
+  agenda: Array.isArray(doc.agenda)
+    ? doc.agenda.map((item: Record<string, any>) => mapAgenda(item))
+    : [],
+  risks: mapItems(doc.risks),
+  stats: mapStats(doc.stats),
+  planDateKey: doc.planDateKey ?? "",
   sourceStats: {
     transcriptCount: Number(doc.sourceStats?.transcriptCount ?? 0),
     taskCount: Number(doc.sourceStats?.taskCount ?? 0),
@@ -117,6 +166,8 @@ export const mapBriefing = (doc: Record<string, any>) => ({
     pendingTranscriptCount: Number(
       doc.sourceStats?.pendingTranscriptCount ?? 0,
     ),
+    chatMessageCount: Number(doc.sourceStats?.chatMessageCount ?? 0),
+    openTaskCount: Number(doc.sourceStats?.openTaskCount ?? 0),
   },
   pipelineVersion: doc.pipelineVersion ?? "daily-briefing-v1",
   generatedAt: doc.generatedAt ?? null,
@@ -171,7 +222,7 @@ export const forceGenerateDailyBriefingForUser = async (
     };
   }
 
-  const period = options?.period === "yesterday" ? "yesterday" : "today";
+  const period = options?.period === "today" ? "today" : "yesterday";
   const body: Record<string, string> = {
     userId,
     period,
