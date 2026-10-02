@@ -76,6 +76,28 @@ const calendarEventSchema = new mongoose.Schema(
       ref: "Reminder",
       default: null,
     },
+    source: {
+      type: String,
+      enum: ["manual", "google"],
+      default: "manual",
+    },
+    /** Provider event id; all-day events spanning days get one row per day (`<id>:<dateKey>`). */
+    externalId: {
+      type: String,
+      default: undefined,
+    },
+    externalCalendarId: {
+      type: String,
+      default: undefined,
+    },
+    externalUrl: {
+      type: String,
+      default: "",
+    },
+    allDay: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
@@ -85,6 +107,10 @@ const calendarEventSchema = new mongoose.Schema(
 
 calendarEventSchema.index({ userId: 1, dateKey: 1, _id: -1 });
 calendarEventSchema.index({ userId: 1, _id: -1 });
+calendarEventSchema.index(
+  { userId: 1, source: 1, externalId: 1 },
+  { unique: true, partialFilterExpression: { externalId: { $type: "string" } } },
+);
 
 const CalendarEvent =
   mongoose.models.CalendarEvent ||

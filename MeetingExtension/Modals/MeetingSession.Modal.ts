@@ -62,6 +62,8 @@ const meetingSessionSchema = new mongoose.Schema(
     },
     finalRecordingS3Key: { type: String, default: null },
     mergeMissingSequences: { type: [Number], default: [] },
+    /** A late chunk arrived while a merge was in flight — merge again once it finishes. */
+    videoRemergeRequested: { type: Boolean, default: false },
     mergePresentChunkCount: { type: Number, default: null },
     stopRequestedAt: { type: Date, default: null },
     finalizedAt: { type: Date, default: null },
@@ -77,6 +79,8 @@ const meetingSessionSchema = new mongoose.Schema(
 );
 
 meetingSessionSchema.index({ userId: 1, createdAt: -1 });
+// Unfiltered meetings list: newest first by _id with a cursor.
+meetingSessionSchema.index({ userId: 1, _id: -1 });
 meetingSessionSchema.index({ userId: 1, spaceId: 1, _id: -1 });
 meetingSessionSchema.index({ status: 1, updatedAt: 1 });
 meetingSessionSchema.index(

@@ -3,6 +3,20 @@ import { MeetingStatus, TERMINAL_REJECT_UPLOAD_STATUSES } from "./constants.js";
 export const canAcceptUploads = (status: MeetingStatus) =>
   !TERMINAL_REJECT_UPLOAD_STATUSES.has(status);
 
+/**
+ * A chunk the client recorded before Stop (sequence <= expectedFinalSequence) that arrives after
+ * the meeting moved past the upload phase. Accepted for the video merge so recordings heal
+ * instead of keeping a permanent gap.
+ */
+export const isLateRecordedChunk = (
+  meeting: { status: MeetingStatus; expectedFinalSequence?: number | null },
+  sequence: number,
+) =>
+  !canAcceptUploads(meeting.status) &&
+  meeting.expectedFinalSequence != null &&
+  sequence >= 1 &&
+  sequence <= meeting.expectedFinalSequence;
+
 export const missingSequences = (
   expectedFinalSequence: number,
   uploadedSequences: Iterable<number>,

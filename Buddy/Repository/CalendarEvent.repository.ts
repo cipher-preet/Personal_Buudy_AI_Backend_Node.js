@@ -11,7 +11,10 @@ import { shiftLocalDateTimeByMinutes } from "../reminderSchedule/time.js";
 const TONES = ["indigo", "violet", "cyan", "teal"] as const;
 const TIMELINE_PAD_HOURS = 2;
 const EVENT_CARD_FIELDS =
-  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping remindBeforeMinutes reminderId createdAt updatedAt";
+  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping remindBeforeMinutes reminderId source externalUrl allDay createdAt updatedAt";
+
+const GOOGLE_READ_ONLY_MESSAGE =
+  "This event is synced from Google Calendar. Edit or delete it in Google Calendar.";
 
 const createIdFilter = (id: string) => {
   if (!mongoose.isValidObjectId(id)) {
@@ -46,6 +49,9 @@ const mapEventCard = (event: Record<string, any>) => ({
     Math.min(1440, Number(event.remindBeforeMinutes) || 0),
   ),
   reminderId: event.reminderId ? String(event.reminderId) : null,
+  source: event.source === "google" ? "google" : "manual",
+  allDay: Boolean(event.allDay),
+  externalUrl: event.externalUrl || "",
   createdAt: event.createdAt ?? null,
   updatedAt: event.updatedAt ?? null,
 });
@@ -441,6 +447,13 @@ export const updateCalendarEventRepository = async (
       };
     }
 
+    if (existing.source === "google") {
+      return {
+        status: STATUS_CODE.FORBIDDEN,
+        message: GOOGLE_READ_ONLY_MESSAGE,
+      };
+    }
+
     const reminderId = await syncLinkedReminder(
       userId,
       payload,
@@ -504,6 +517,20 @@ export const deleteCalendarEventRepository = async (
       return {
         status: STATUS_CODE.BAD_REQUEST,
         message: "Invalid 'eventId' value.",
+      };
+    }
+
+    const target = await CalendarEvent.findOne({
+      _id: eventId,
+      userId: createIdFilter(userId),
+    })
+      .select("source")
+      .lean<{ source?: string } | null>();
+
+    if (target?.source === "google") {
+      return {
+        status: STATUS_CODE.FORBIDDEN,
+        message: GOOGLE_READ_ONLY_MESSAGE,
       };
     }
 

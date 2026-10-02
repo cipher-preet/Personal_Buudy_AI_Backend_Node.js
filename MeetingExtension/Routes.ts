@@ -4,6 +4,7 @@ import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 import {
   completeChunkController,
   createMeetingController,
+  deleteMeetingController,
   getMeetingController,
   assignMeetingSpaceController,
   getMeetingNotesController,
@@ -22,6 +23,7 @@ const router = Router();
 router.post("/", requireAuth, createMeetingController);
 router.get("/", requireAuth, listMeetingsController);
 router.get("/:sessionId", requireAuth, getMeetingController);
+router.delete("/:sessionId", requireAuth, deleteMeetingController);
 router.patch("/:sessionId/space", requireAuth, assignMeetingSpaceController);
 router.get("/:sessionId/transcript", requireAuth, getMeetingTranscriptController);
 router.get("/:sessionId/summary", requireAuth, getMeetingSummaryController);

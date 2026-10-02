@@ -6,6 +6,7 @@ import {
 } from "../../Api/index.js";
 import type { CustomRequest } from "../../types/types.js";
 import { getCalendarFeedServices } from "../Services/CalendarFeed.services.js";
+import { syncGoogleCalendarIfStale } from "../Services/GoogleCalendar.services.js";
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -52,6 +53,8 @@ export const getCalendarFeedController = async (
         "'from' must be on or before 'to'.",
       );
     }
+
+    await syncGoogleCalendarIfStale(String(userId));
 
     const response = await getCalendarFeedServices(
       String(userId),

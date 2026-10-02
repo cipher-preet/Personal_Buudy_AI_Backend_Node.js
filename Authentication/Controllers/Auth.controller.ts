@@ -402,15 +402,16 @@ const googleLoginController = async (
       );
     }
 
+    const email = payload.email.trim().toLowerCase();
     let user: any = await User.findOne({
-      $or: [{ googleId: payload.sub }, { email: payload.email }],
+      $or: [{ googleId: payload.sub }, { email }],
     });
     let isNewUser = false;
 
     if (!user) {
       user = await User.create({
         name: payload.name,
-        email: payload.email,
+        email,
         googleId: payload.sub,
         avatar: payload.picture,
         provider: "google",

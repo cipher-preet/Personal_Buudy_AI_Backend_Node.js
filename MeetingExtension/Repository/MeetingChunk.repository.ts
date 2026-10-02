@@ -186,3 +186,8 @@ export const countChunksBySession = async (
   ]);
   return { uploaded, processed, failed };
 };
+
+export const deleteChunksBySession = async (meetingSessionId: mongoose.Types.ObjectId) => {
+  const result = await MeetingRecordingChunk.deleteMany({ meetingSessionId });
+  return result.deletedCount;
+};

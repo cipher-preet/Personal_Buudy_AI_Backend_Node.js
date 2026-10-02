@@ -1,6 +1,8 @@
 import {
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -206,6 +208,49 @@ export const getS3Object = async ({
       ...(range ? { Range: range } : {}),
     }),
   );
+};
+
+/**
+ * Deletes every object under `prefix` (must end with "/"), 1000 keys per request.
+ * Returns the number of objects removed.
+ */
+export const deleteS3Prefix = async (prefix: string) => {
+  if (!hasS3Config || !bucket) {
+    throw new Error("S3 is not configured");
+  }
+  if (!prefix.endsWith("/") || prefix.split("/").filter(Boolean).length < 2) {
+    throw new Error("Refusing to delete an unscoped S3 prefix");
+  }
+
+  let deleted = 0;
+  let continuationToken: string | undefined;
+  do {
+    const page = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    const keys = (page.Contents ?? [])
+      .map((item) => item.Key)
+      .filter((key): key is string => Boolean(key));
+    if (keys.length > 0) {
+      const result = await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: bucket,
+          Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+        }),
+      );
+      if (result.Errors?.length) {
+        throw new Error(`Failed to delete ${result.Errors.length} S3 objects`);
+      }
+      deleted += keys.length;
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return deleted;
 };
 
 export const headS3Object = async (key: string) => {

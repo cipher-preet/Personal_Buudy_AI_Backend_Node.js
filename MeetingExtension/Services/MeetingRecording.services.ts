@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import {
   createPresignedGetUrl,
   createPresignedPutUrl,
+  deleteS3Prefix,
   getS3Object,
   getSharedS3Bucket,
   hasSharedS3Config,
@@ -21,6 +22,7 @@ import { MeetingError } from "../errors.js";
 import { logMeetingEvent } from "../log.js";
 import {
   assignConversationSpace,
+  deleteConversationArtifacts,
   getArtifactCounts,
   getConversation,
   getConversationSummary,
@@ -36,6 +38,7 @@ import { buildEnvelope, publishMeetingEvent } from "../queue.js";
 import { allowRateLimit } from "../rateLimit.js";
 import {
   countChunksBySession,
+  deleteChunksBySession,
   ensureMeetingChunkIndexes,
   findChunk,
   listUploadedSequences,
@@ -44,6 +47,7 @@ import {
 } from "../Repository/MeetingChunk.repository.js";
 import {
   createMeetingSession,
+  deleteMeetingSessionForUser,
   findMeetingByClientRequestId,
   findMeetingById,
   findMeetingsNeedingUploadAdvance,
@@ -51,8 +55,13 @@ import {
   listMeetingsForUser,
   markStaleMeetings,
 } from "../Repository/MeetingSession.repository.js";
-import { buildChunkId, buildFinalRecordingS3Key, buildMeetingChunkS3Key } from "../s3Keys.js";
-import { canAcceptUploads, missingSequences, toClientStatus } from "../state.js";
+import {
+  buildChunkId,
+  buildFinalRecordingS3Key,
+  buildMeetingChunkS3Key,
+  sanitizeKeyPart,
+} from "../s3Keys.js";
+import { canAcceptUploads, isLateRecordedChunk, missingSequences, toClientStatus } from "../state.js";
 import { flattenTranscriptSegments } from "../transcript.js";
 import {
   assertAllowedMimeType,
@@ -75,6 +84,9 @@ const spaceIdForEvent = (spaceId: unknown): string =>
 
 const spaceIdForResponse = (spaceId: unknown): string | null =>
   spaceId ? String(spaceId) : null;
+
+/** A RECORDING session with no activity for this long is treated as abandoned and deletable. */
+const ACTIVE_RECORDING_GRACE_MS = 2 * 60_000;
 
 export type S3Port = {
   hasConfig: () => boolean;
@@ -285,7 +297,11 @@ export class MeetingRecordingService {
       );
     }
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
-    if (!canAcceptUploads(meeting.status as MeetingStatus)) {
+    const sequence = parseSequence(body.sequence);
+    if (
+      !canAcceptUploads(meeting.status as MeetingStatus) &&
+      !isLateRecordedChunk(meeting as { status: MeetingStatus; expectedFinalSequence?: number | null }, sequence)
+    ) {
       throw new MeetingError(
         MeetingErrorCode.MEETING_INVALID_STATE,
         "Meeting is not accepting new chunk uploads.",
@@ -294,7 +310,6 @@ export class MeetingRecordingService {
       );
     }
 
-    const sequence = parseSequence(body.sequence);
     this.assertSequenceAllowed(meeting, sequence);
 
     const mimeType = assertAllowedMimeType(body.mimeType || meeting.recordingMimeType);
@@ -390,7 +405,15 @@ export class MeetingRecordingService {
       mediaKind,
     });
 
-    if (!canAcceptUploads(meeting.status as MeetingStatus) && existing?.uploadStatus !== "UPLOADED") {
+    const lateChunk = isLateRecordedChunk(
+      meeting as { status: MeetingStatus; expectedFinalSequence?: number | null },
+      sequence,
+    );
+    if (
+      !canAcceptUploads(meeting.status as MeetingStatus) &&
+      existing?.uploadStatus !== "UPLOADED" &&
+      !lateChunk
+    ) {
       throw new MeetingError(
         MeetingErrorCode.MEETING_INVALID_STATE,
         "Meeting is not accepting new chunk uploads.",
@@ -469,8 +492,9 @@ export class MeetingRecordingService {
     });
 
     const bucket = this.s3.bucket() || "";
+    // Late chunks only heal the video — transcription for this meeting is already finalized.
     const followsAudioPath =
-      mediaKind === MeetingMediaKind.AUDIO || mediaKind === MeetingMediaKind.MUXED;
+      !lateChunk && (mediaKind === MeetingMediaKind.AUDIO || mediaKind === MeetingMediaKind.MUXED);
 
     if (followsAudioPath) {
       await upsertPendingMediaRows({
@@ -550,9 +574,22 @@ export class MeetingRecordingService {
     meeting.lastReceivedSequence = Math.max(meeting.lastReceivedSequence || 0, sequence);
     meeting.totalBytes = (meeting.totalBytes || 0) + (claimed.enqueuedNow ? head.sizeBytes : 0);
     await refreshChunkCounters(meeting);
-    // After STOP, always try to advance — even if conversation status sync
-    // already moved the session past WAITING_FOR_UPLOADS (merge can still be stuck).
-    if (meeting.stopRequestedAt || meeting.expectedFinalSequence != null) {
+    const carriesVideo = mediaKind === MeetingMediaKind.VIDEO || mediaKind === MeetingMediaKind.MUXED;
+    if (claimed.enqueuedNow && carriesVideo) {
+      this.requestRemergeForLateChunk(meeting, sequence);
+    }
+    if (lateChunk) {
+      // Past the upload phase: only rebuild the video, never re-drive meeting status.
+      if (
+        config.videoFinalizationEnabled &&
+        meeting.videoMergeStatus === VideoMergeStatus.NOT_STARTED
+      ) {
+        await this.publishVideoMerge(meeting, config, "late_chunk");
+      }
+      await meeting.save();
+    } else if (meeting.stopRequestedAt || meeting.expectedFinalSequence != null) {
+      // After STOP, always try to advance — even if conversation status sync
+      // already moved the session past WAITING_FOR_UPLOADS (merge can still be stuck).
       await this.maybeAdvanceAfterUploads(meeting, config);
     } else {
       await meeting.save();
@@ -801,6 +838,54 @@ export class MeetingRecordingService {
     };
   }
 
+  /**
+   * Permanently deletes a meeting: the session, its upload chunks, the AI conversation
+   * (transcripts, notes, tasks, summary) and the S3 recording files.
+   */
+  async remove(userId: string | undefined, meetingSessionId: string) {
+    const ownerId = requireUserId(userId);
+    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const sessionObjectId = meeting._id as mongoose.Types.ObjectId;
+    const sessionId = String(sessionObjectId);
+
+    const lastActivity = new Date(meeting.updatedAt || meeting.createdAt || 0).getTime();
+    if (
+      meeting.status === MeetingStatus.RECORDING &&
+      Date.now() - lastActivity < ACTIVE_RECORDING_GRACE_MS
+    ) {
+      throw new MeetingError(
+        MeetingErrorCode.MEETING_DELETE_ACTIVE,
+        "This meeting is still recording. Stop the recording, then delete it.",
+        409,
+      );
+    }
+
+    // Remove the session first so the meeting disappears even if a cleanup step fails.
+    await deleteMeetingSessionForUser(sessionObjectId, ownerId);
+
+    const config = getMeetingConfig();
+    const s3Prefix = `${config.s3Prefix}/${sanitizeKeyPart(ownerId)}/${sanitizeKeyPart(sessionId)}/`;
+    const [artifacts, chunks, files] = await Promise.allSettled([
+      deleteConversationArtifacts(sessionId),
+      deleteChunksBySession(sessionObjectId),
+      this.s3.hasConfig() ? deleteS3Prefix(s3Prefix) : Promise.resolve(0),
+    ]);
+
+    const failures = [artifacts, chunks, files]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+
+    logMeetingEvent(failures.length ? "meeting_delete_partial" : "meeting_deleted", {
+      meetingSessionId: sessionId,
+      userId: ownerId,
+      s3Objects: files.status === "fulfilled" ? files.value : 0,
+      chunks: chunks.status === "fulfilled" ? chunks.value : 0,
+      ...(failures.length ? { failures: failures.join("; ") } : {}),
+    });
+
+    return { meetingSessionId: sessionId, deleted: true };
+  }
+
   async getPlayback(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
@@ -973,6 +1058,80 @@ export class MeetingRecordingService {
       logMeetingEvent("meeting_upload_timeout_advanced", { count: advanced });
     }
     return advanced;
+  }
+
+  private async publishVideoMerge(
+    meeting: mongoose.Document & Record<string, any>,
+    config: ReturnType<typeof getMeetingConfig>,
+    source: string,
+  ) {
+    const expected = Number(meeting.expectedFinalSequence || 0);
+    if (!expected) {
+      return;
+    }
+    meeting.videoMergeStatus = VideoMergeStatus.PENDING;
+    await this.queue.publish(
+      config.meetingMergeStream,
+      buildEnvelope({
+        eventId: `meeting:${String(meeting._id)}:merge:${Date.now()}`,
+        eventType: "meeting.video.merge.requested",
+        userId: String(meeting.userId),
+        spaceId: spaceIdForEvent(meeting.spaceId),
+        conversationId: String(meeting._id),
+        payload: {
+          meetingSessionId: String(meeting._id),
+          userId: String(meeting.userId),
+          expectedFinalSequence: expected,
+          allowMissingSequences: true,
+          s3Prefix: config.s3Prefix,
+          finalRecordingS3Key: buildFinalRecordingS3Key({
+            prefix: config.s3Prefix,
+            userId: String(meeting.userId),
+            meetingSessionId: String(meeting._id),
+          }),
+        },
+      }),
+    );
+    logMeetingEvent("meeting_video_merge_enqueued", {
+      meetingSessionId: String(meeting._id),
+      userId: String(meeting.userId),
+      source,
+    });
+  }
+
+  /**
+   * A video chunk registered after a merge already ran (or is running) — rebuild the final
+   * recording so the gap heals. Playback keeps serving the previous merge meanwhile.
+   */
+  private requestRemergeForLateChunk(
+    meeting: mongoose.Document & Record<string, any>,
+    sequence: number,
+  ) {
+    const status = String(meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED);
+    if (status === VideoMergeStatus.PENDING || status === VideoMergeStatus.RUNNING) {
+      // The in-flight merge may have listed chunks before this one landed; it re-runs on finish.
+      meeting.videoRemergeRequested = true;
+      return;
+    }
+    if (status === VideoMergeStatus.COMPLETED) {
+      const missing: number[] = Array.isArray(meeting.mergeMissingSequences)
+        ? meeting.mergeMissingSequences
+        : [];
+      if (!missing.includes(sequence)) {
+        return;
+      }
+    } else if (status !== VideoMergeStatus.FAILED) {
+      return;
+    }
+    // NOT_STARTED lets maybeAdvanceAfterUploads enqueue a fresh merge.
+    meeting.videoMergeStatus = VideoMergeStatus.NOT_STARTED;
+    meeting.videoRemergeRequested = false;
+    logMeetingEvent("meeting_video_remerge_requested", {
+      meetingSessionId: String(meeting._id),
+      userId: String(meeting.userId),
+      chunkSequence: sequence,
+      previousMergeStatus: status,
+    });
   }
 
   private assertSequenceAllowed(meeting: { expectedFinalSequence?: number | null; status: string }, sequence: number) {

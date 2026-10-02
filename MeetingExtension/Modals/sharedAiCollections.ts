@@ -378,6 +378,36 @@ export const assignConversationSpace = async ({
   };
 };
 
+/** Hard-deletes the meeting conversation and everything the AI pipeline derived from it. */
+export const deleteConversationArtifacts = async (conversationId: string) => {
+  const id = idFilter(conversationId) as any;
+  const byConversation = { conversationId: id };
+  const bySource = { $or: [{ sourceConversationId: id }, { conversationId: id }] };
+  const collections = aiCollections();
+
+  const [conversation, audioChunks, transcriptChunks, extractionRuns, notes, stagedNotes, tasks, stagedTasks, summaries] =
+    await Promise.all([
+      collections.conversations.deleteOne({ _id: id }),
+      collections.audioChunks.deleteMany(byConversation),
+      collections.transcriptChunks.deleteMany(byConversation),
+      collections.extractionRuns.deleteMany(byConversation),
+      collections.notes.deleteMany(bySource),
+      collections.stagedNotes.deleteMany(bySource),
+      collections.tasks.deleteMany(bySource),
+      collections.stagedTasks.deleteMany(bySource),
+      collections.conversationSummaries.deleteMany(byConversation),
+    ]);
+
+  return {
+    conversation: conversation.deletedCount,
+    chunks: audioChunks.deletedCount + transcriptChunks.deletedCount,
+    extractionRuns: extractionRuns.deletedCount,
+    notes: notes.deletedCount + stagedNotes.deletedCount,
+    tasks: tasks.deletedCount + stagedTasks.deletedCount,
+    summaries: summaries.deletedCount,
+  };
+};
+
 const toIso = (value: unknown) => {
   if (!value) {
     return null;

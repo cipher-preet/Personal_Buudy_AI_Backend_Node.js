@@ -140,6 +140,13 @@ export const assignMeetingSpaceController = async (req: CustomRequest, res: Resp
   );
 };
 
+export const deleteMeetingController = async (req: CustomRequest, res: Response) => {
+  if (!isMeetingExtensionEnabled()) {
+    return unavailable(res);
+  }
+  return handle(res, () => meetingRecordingService.remove(ownerId(req), param(req.params.sessionId)));
+};
+
 export const getMeetingPlaybackController = async (req: CustomRequest, res: Response) => {
   if (!isMeetingExtensionEnabled()) {
     return unavailable(res);

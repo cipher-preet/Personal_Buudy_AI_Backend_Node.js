@@ -45,6 +45,7 @@ import { streamConversationStatusEvents } from "./Services/ConversationStatusEve
 import { getDailyBriefingController, forceGenerateDailyBriefingController } from "./Controllers/DailyBriefing.Controller.js";
 import { submitFeedbackController } from "./Controllers/Feedback.Controller.js";
 import { raiseSupportTicketController } from "./Controllers/SupportTicket.Controller.js";
+import { searchWorkspaceController } from "./Controllers/Search.Controller.js";
 import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
@@ -61,6 +62,7 @@ router.get(
   requireAuth,
   streamConversationStatusEvents,
 );
+router.get("/search", requireAuth, searchWorkspaceController);
 router.get("/getSpaceStats", getSpaceStatsController);
 router.get("/getProfileSummary", getProfileSummaryController);
 router.get("/getNoteWorkspaces", getNoteWorkspacesController);

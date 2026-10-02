@@ -10,6 +10,7 @@ import { connectReminderRedis } from "./Buddy/reminderSchedule/redisClient.js";
 import { startSseHealthLogger } from "./Buddy/Services/sseDiagnostics.js";
 import { isMeetingExtensionEnabled } from "./MeetingExtension/config.js";
 import { startMeetingStaleScanner } from "./MeetingExtension/staleScanner.js";
+import { startGoogleCalendarSyncScheduler } from "./Buddy/Services/GoogleCalendar.services.js";
 
 const PORT = Number(process.env.PORT) || 5000;
 
@@ -22,6 +23,7 @@ const startServer = async () => {
     if (isMeetingExtensionEnabled()) {
       startMeetingStaleScanner();
     }
+    startGoogleCalendarSyncScheduler();
     setInterval(() => {
       console.log(
         JSON.stringify({

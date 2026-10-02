@@ -82,6 +82,46 @@ export const findMeetingById = async (meetingSessionId: string) => {
 
 export const saveMeeting = async (doc: mongoose.Document) => doc.save();
 
+/** Fields read by MeetingRecordingService.toDetail for list cards. */
+const LIST_PROJECTION = {
+  userId: 1,
+  spaceId: 1,
+  provider: 1,
+  sourceType: 1,
+  meetingTitle: 1,
+  meetingUrl: 1,
+  startedAt: 1,
+  endedAt: 1,
+  durationMs: 1,
+  status: 1,
+  transcriptStatus: 1,
+  intelligenceStatus: 1,
+  videoMergeStatus: 1,
+  finalRecordingS3Key: 1,
+  mergeMissingSequences: 1,
+  mergePresentChunkCount: 1,
+  expectedFinalSequence: 1,
+  lastReceivedSequence: 1,
+  totalChunks: 1,
+  uploadedChunks: 1,
+  processedChunks: 1,
+  failedChunks: 1,
+  extensionVersion: 1,
+  createdAt: 1,
+  updatedAt: 1,
+} as const;
+
+export const deleteMeetingSessionForUser = async (
+  meetingSessionId: mongoose.Types.ObjectId,
+  userId: string,
+) => {
+  const result = await MeetingSession.deleteOne({
+    _id: meetingSessionId,
+    userId: userFilter(userId),
+  });
+  return result.deletedCount;
+};
+
 export const listMeetingsForUser = async ({
   userId,
   limit,
@@ -108,6 +148,7 @@ export const listMeetingsForUser = async ({
 
   // Projection keeps list payloads light; detail endpoints fetch full docs.
   const items = await MeetingSession.find(query)
+    .select(LIST_PROJECTION)
     .sort({ _id: -1 })
     .limit(limit + 1)
     .lean();

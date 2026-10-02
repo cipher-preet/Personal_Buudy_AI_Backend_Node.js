@@ -16,7 +16,7 @@ const TIMELINE_PAD_HOURS = 2;
 const TONES = ["indigo", "violet", "cyan", "teal"] as const;
 
 const EVENT_FIELDS =
-  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping remindBeforeMinutes reminderId createdAt updatedAt";
+  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping remindBeforeMinutes reminderId source externalUrl allDay createdAt updatedAt";
 const REMINDER_FIELDS =
   "title description dateKey dateLabel timeLabel source tone repeat aiCalling notification beeping createdAt updatedAt";
 const TASK_FIELDS =
@@ -48,6 +48,9 @@ export type CalendarFeedItem = {
   aiReminder?: boolean;
   remindBeforeMinutes?: number;
   reminderId?: string | null;
+  provider?: "google" | null;
+  allDay?: boolean;
+  externalUrl?: string;
 };
 
 const createIdFilter = (id: string) => {
@@ -193,8 +196,8 @@ const mapEventItem = (event: Record<string, any>): CalendarFeedItem => ({
   title: event.title ?? "",
   description: event.description ?? "",
   dateKey: event.dateKey ?? "",
-  startTimeLabel: event.startTimeLabel ?? null,
-  endTimeLabel: event.endTimeLabel ?? null,
+  startTimeLabel: event.allDay ? null : event.startTimeLabel ?? null,
+  endTimeLabel: event.allDay ? null : event.endTimeLabel ?? null,
   location: event.location ?? "",
   spaceId: null,
   spaceName: null,
@@ -207,6 +210,9 @@ const mapEventItem = (event: Record<string, any>): CalendarFeedItem => ({
     Math.min(1440, Number(event.remindBeforeMinutes) || 0),
   ),
   reminderId: event.reminderId ? String(event.reminderId) : null,
+  provider: event.source === "google" ? "google" : null,
+  allDay: Boolean(event.allDay),
+  externalUrl: event.externalUrl || "",
 });
 
 const mapReminderItem = (reminder: Record<string, any>): CalendarFeedItem => ({

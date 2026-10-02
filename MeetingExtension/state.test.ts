@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { MeetingStatus } from "./constants.js";
-import { canAcceptUploads, missingSequences, toClientStatus } from "./state.js";
+import { canAcceptUploads, isLateRecordedChunk, missingSequences, toClientStatus } from "./state.js";
 
 describe("meeting state helpers", () => {
   it("detects missing sequences without requiring upload order", () => {
@@ -18,6 +18,17 @@ describe("meeting state helpers", () => {
   it("rejects new chunks after READY", () => {
     assert.equal(canAcceptUploads(MeetingStatus.READY), false);
     assert.equal(canAcceptUploads(MeetingStatus.FINALIZING), false);
+  });
+
+  it("still accepts chunks recorded before Stop once the meeting is READY", () => {
+    const ready = { status: MeetingStatus.READY, expectedFinalSequence: 20 };
+    assert.equal(isLateRecordedChunk(ready, 7), true);
+    assert.equal(isLateRecordedChunk(ready, 21), false);
+    assert.equal(isLateRecordedChunk({ status: MeetingStatus.READY, expectedFinalSequence: null }, 7), false);
+    assert.equal(
+      isLateRecordedChunk({ status: MeetingStatus.RECORDING, expectedFinalSequence: 20 }, 7),
+      false,
+    );
   });
 
   it("exposes a simplified client status contract", () => {
