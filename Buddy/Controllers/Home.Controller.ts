@@ -12,6 +12,7 @@ import {
   deleteSpaceServices,
   deleteStagedNoteServices,
   deleteStagedTaskServices,
+  getNoteConversationsBySpaceServices,
   getNoteDateMarkersBySpaceServices,
   getNoteWorkspacesServices,
   getProfileSummaryServices,
@@ -28,6 +29,10 @@ import {
   updateStagedTaskServices,
   setStagedTaskStatusServices,
 } from "../Services/Home.services.js";
+import {
+  NO_CONVERSATION_KEY,
+  type SpaceCountsMode,
+} from "../Repository/Home.repository.js";
 import mongoose, { Model } from "mongoose";
 
 const createSpaceController = async (
@@ -268,7 +273,22 @@ const getUserSpacesByUserIdController = async (
       );
     }
 
-    const response = await getUserSpacesByUserIdServices(userId, limit, cursor);
+    const countsParam =
+      typeof req.query.counts === "string" ? req.query.counts.trim() : "all";
+    if (!["all", "notes", "tasks", "none"].includes(countsParam)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "'counts' must be one of: all, notes, tasks, none.",
+      );
+    }
+
+    const response = await getUserSpacesByUserIdServices(
+      userId,
+      limit,
+      cursor,
+      countsParam as SpaceCountsMode,
+    );
 
     if (response.status === STATUS_CODE.BAD_REQUEST) {
       return ErrorResponse(res, response.status, response.message);
@@ -460,12 +480,97 @@ const getStagedNotesBySpaceController = async (
       );
     }
 
+    const conversationId =
+      typeof req.query.conversationId === "string"
+        ? req.query.conversationId.trim()
+        : undefined;
+
+    if (
+      conversationId &&
+      conversationId !== NO_CONVERSATION_KEY &&
+      !mongoose.isValidObjectId(conversationId)
+    ) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid 'conversationId' query parameter.",
+      );
+    }
+
     const response = await getStagedNotesBySpaceServices(
       userId.trim(),
       spaceId.trim(),
       limit,
       cursor,
       date,
+      conversationId || undefined,
+    );
+
+    if (response.data) {
+      return SuccessResponse(res, response.status, response.data);
+    }
+
+    return ErrorResponse(res, response.status, response.message);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
+const getNoteConversationsBySpaceController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId =
+      typeof req.query.userId === "string" ? req.query.userId.trim() : "";
+    const spaceId =
+      typeof req.query.spaceId === "string" ? req.query.spaceId.trim() : "";
+    const limit = req.query.limit ? Number(req.query.limit) : 10;
+    const cursor =
+      typeof req.query.cursor === "string" && req.query.cursor.trim()
+        ? req.query.cursor.trim()
+        : undefined;
+
+    if (!userId) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'userId' query parameter.",
+      );
+    }
+
+    if (!spaceId) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'spaceId' query parameter.",
+      );
+    }
+
+    if (req.query.limit && (Number.isNaN(limit) || limit <= 0 || limit > 50)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "'limit' must be a number between 1 and 50.",
+      );
+    }
+
+    if (cursor && !/^\d+$/.test(cursor)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid 'cursor' query parameter.",
+      );
+    }
+
+    const response = await getNoteConversationsBySpaceServices(
+      userId,
+      spaceId,
+      limit,
+      cursor,
     );
 
     if (response.data) {
@@ -1209,6 +1314,7 @@ export {
   getSpaceStatsController,
   getStagedNoteByIdController,
   getStagedNotesBySpaceController,
+  getNoteConversationsBySpaceController,
   getStagedTasksBySpaceController,
   getTaskDateMarkersBySpaceController,
   getUserSpacesByUserIdController,

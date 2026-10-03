@@ -522,9 +522,9 @@ const checkAuthController = async (
       return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Session is not active");
     }
 
-    const user: any = await User.findById(authUser.id).select(
-      "-password -__v -createdAt -updatedAt",
-    );
+    const user: any = await User.findById(authUser.id)
+      .select("phone email name avatar onboarding.completedAt")
+      .lean();
 
     if (!user) {
       return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Session is not active");

@@ -104,132 +104,186 @@ const notDeletedFilter = {
   $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
 };
 
-/** Ensure staged notes/tasks also exist in official main collections. */
-const mirrorStagedNotesIntoMain = async (userId: string, spaceId: string) => {
-  try {
-    const staged = await StagedNotes.find({
-      userId: createIdFilter(userId),
-      spaceId: createIdFilter(spaceId),
-      ...notDeletedFilter,
-    })
-      .limit(500)
-      .lean();
+/**
+ * Ensure staged notes/tasks also exist in the official main collections.
+ *
+ * Only staged docs that were never mirrored (or changed since) are copied, and
+ * each one is stamped with `mirroredAt`, so steady-state calls cost a single
+ * indexed lookup instead of re-upserting up to 500 docs on every request.
+ * Concurrent calls for the same user/space share one in-flight run.
+ */
+const MIRROR_BATCH_LIMIT = 500;
+const inflightMirrors = new Map<string, Promise<void>>();
 
-    if (!staged.length) {
-      return;
-    }
+const pendingMirrorFilter = (userId: string, spaceId: string) => ({
+  userId: createIdFilter(userId),
+  spaceId: createIdFilter(spaceId),
+  $and: [
+    notDeletedFilter,
+    {
+      $or: [
+        { mirroredAt: { $exists: false } },
+        { mirroredAt: null },
+        { $expr: { $gt: ["$updatedAt", "$mirroredAt"] } },
+      ],
+    },
+  ],
+});
 
-    const notes = mongoose.connection.collection("notes");
-    await notes.bulkWrite(
-      staged.map(note => {
-        const doc = { ...note, deletedAt: null };
-        const filter =
-          typeof note.fingerprint === "string" && note.fingerprint.trim()
-            ? {
-                fingerprint: note.fingerprint,
-                userId: note.userId,
-                spaceId: note.spaceId,
-              }
-            : { _id: note._id };
-
-        return {
-          updateOne: {
-            filter,
-            update: {
-              $set: {
-                title: doc.title,
-                body: doc.body,
-                confidence: doc.confidence ?? null,
-                evidence: doc.evidence ?? [],
-                origin: doc.origin ?? "explicit",
-                source: doc.source ?? "manual",
-                userId: doc.userId,
-                spaceId: doc.spaceId,
-                updatedAt: doc.updatedAt ?? new Date(),
-                deletedAt: null,
-              },
-              $setOnInsert: {
-                _id: note._id,
-                createdAt: doc.createdAt ?? new Date(),
-              },
-            },
-            upsert: true,
-          },
-        };
-      }),
-      { ordered: false },
-    );
-  } catch (error) {
-    console.log("mirrorStagedNotesIntoMain failed", error);
+const runMirror = async (
+  kind: "notes" | "tasks",
+  userId: string,
+  spaceId: string,
+  buildSet: (doc: Record<string, any>) => Record<string, any>,
+) => {
+  const key = `${kind}:${userId}:${spaceId}`;
+  const existing = inflightMirrors.get(key);
+  if (existing) {
+    return existing;
   }
+
+  const run = (async () => {
+    try {
+      const stagedCollection =
+        kind === "notes" ? StagedNotes.collection : StagedTasks.collection;
+      const staged = await stagedCollection
+        .find(pendingMirrorFilter(userId, spaceId))
+        .limit(MIRROR_BATCH_LIMIT)
+        .toArray();
+
+      if (!staged.length) {
+        return;
+      }
+
+      await mongoose.connection.collection(kind).bulkWrite(
+        staged.map((doc) => {
+          const filter =
+            typeof doc.fingerprint === "string" && doc.fingerprint.trim()
+              ? {
+                  fingerprint: doc.fingerprint,
+                  userId: doc.userId,
+                  spaceId: doc.spaceId,
+                }
+              : { _id: doc._id };
+
+          return {
+            updateOne: {
+              filter,
+              update: {
+                $set: {
+                  ...buildSet(doc),
+                  userId: doc.userId,
+                  spaceId: doc.spaceId,
+                  updatedAt: doc.updatedAt ?? new Date(),
+                  deletedAt: null,
+                },
+                $setOnInsert: {
+                  _id: doc._id,
+                  createdAt: doc.createdAt ?? new Date(),
+                },
+              },
+              upsert: true,
+            },
+          };
+        }),
+        { ordered: false },
+      );
+
+      await stagedCollection.bulkWrite(
+        staged.map((doc) => ({
+          updateOne: {
+            filter: { _id: doc._id },
+            update: { $set: { mirroredAt: doc.updatedAt ?? new Date() } },
+          },
+        })),
+        { ordered: false },
+      );
+    } catch (error) {
+      console.log(`mirror staged ${kind} failed`, error);
+    } finally {
+      inflightMirrors.delete(key);
+    }
+  })();
+
+  inflightMirrors.set(key, run);
+  return run;
 };
 
-const mirrorStagedTasksIntoMain = async (userId: string, spaceId: string) => {
-  try {
-    const staged = await StagedTasks.find({
-      userId: createIdFilter(userId),
-      spaceId: createIdFilter(spaceId),
-      ...notDeletedFilter,
-    })
-      .limit(500)
-      .lean();
+const mirrorStagedNotesIntoMain = (userId: string, spaceId: string) =>
+  runMirror("notes", userId, spaceId, (doc) => ({
+    title: doc.title,
+    body: doc.body,
+    confidence: doc.confidence ?? null,
+    evidence: doc.evidence ?? [],
+    origin: doc.origin ?? "explicit",
+    source: doc.source ?? "manual",
+    ...(doc.conversationId ? { conversationId: doc.conversationId } : {}),
+    ...(doc.sourceConversationId
+      ? { sourceConversationId: doc.sourceConversationId }
+      : {}),
+  }));
 
-    if (!staged.length) {
-      return;
-    }
+const mirrorStagedTasksIntoMain = (userId: string, spaceId: string) =>
+  runMirror("tasks", userId, spaceId, (doc) => ({
+    title: doc.title,
+    body: doc.body ?? doc.description ?? "",
+    description: doc.description ?? doc.body ?? "",
+    evidence: doc.evidence ?? [],
+    operation: doc.operation ?? null,
+    status: doc.status ?? "pending",
+    priority: doc.priority ?? null,
+    dueDate: doc.dueDate ?? null,
+    confidence: doc.confidence ?? null,
+    origin: doc.origin ?? "explicit",
+    source: doc.source ?? "manual",
+  }));
 
-    const tasks = mongoose.connection.collection("tasks");
-    await tasks.bulkWrite(
-      staged.map(task => {
-        const doc = { ...task, deletedAt: null };
-        const filter =
-          typeof task.fingerprint === "string" && task.fingerprint.trim()
-            ? {
-                fingerprint: task.fingerprint,
-                userId: task.userId,
-                spaceId: task.spaceId,
-              }
-            : { _id: task._id };
-
-        return {
-          updateOne: {
-            filter,
-            update: {
-              $set: {
-                title: doc.title,
-                body: doc.body ?? doc.description ?? "",
-                description: doc.description ?? doc.body ?? "",
-                evidence: doc.evidence ?? [],
-                operation: doc.operation ?? null,
-                status: doc.status ?? "pending",
-                priority: doc.priority ?? null,
-                dueDate: doc.dueDate ?? null,
-                confidence: doc.confidence ?? null,
-                origin: doc.origin ?? "explicit",
-                source: doc.source ?? "manual",
-                userId: doc.userId,
-                spaceId: doc.spaceId,
-                updatedAt: doc.updatedAt ?? new Date(),
-                deletedAt: null,
-              },
-              $setOnInsert: {
-                _id: task._id,
-                createdAt: doc.createdAt ?? new Date(),
-              },
-            },
-            upsert: true,
-          },
-        };
-      }),
-      { ordered: false },
-    );
-  } catch (error) {
-    console.log("mirrorStagedTasksIntoMain failed", error);
+/**
+ * Indexes backing the per-space list, count and marker queries. createIndex is
+ * idempotent, so this runs once per process on first use.
+ */
+let indexesReady: Promise<void> | null = null;
+const ensureListIndexes = () => {
+  if (!indexesReady) {
+    const db = mongoose.connection;
+    indexesReady = Promise.all([
+      db.collection("notes").createIndex({ userId: 1, spaceId: 1, _id: -1 }),
+      db.collection("notes").createIndex({ userId: 1, spaceId: 1, createdAt: -1 }),
+      db.collection("tasks").createIndex({ userId: 1, spaceId: 1, _id: -1 }),
+      db.collection("tasks").createIndex({ userId: 1, spaceId: 1, createdAt: -1 }),
+      StagedNotes.collection.createIndex({ userId: 1, spaceId: 1, mirroredAt: 1 }),
+      StagedTasks.collection.createIndex({ userId: 1, spaceId: 1, mirroredAt: 1 }),
+      CreateSpace.collection.createIndex({ userId: 1, deletedAt: 1, _id: -1 }),
+      CreateSpace.collection.createIndex({ userId: 1, isListning: 1, deletedAt: 1 }),
+    ])
+      .then(() => undefined)
+      .catch((error) => {
+        console.log("ensureListIndexes failed", error);
+        indexesReady = null;
+      });
   }
+  return indexesReady;
+};
+
+const NOTE_PREVIEW_LENGTH = 140;
+
+const mapNoteListCard = (note: Record<string, any>) => {
+  const conversationId = note.conversationId ?? note.sourceConversationId;
+
+  return {
+    id: String(note._id),
+    title: note.title ?? "",
+    bodyPreview: typeof note.bodyPreview === "string" ? note.bodyPreview : "",
+    confidence: note.confidence ?? null,
+    createdAt: note.createdAt ?? null,
+    updatedAt: note.updatedAt ?? null,
+    conversationId: conversationId ? String(conversationId) : null,
+  };
 };
 
 const mapStagedNoteCard = (note: Record<string, any>) => {
   const body = typeof note.body === "string" ? note.body.trim() : "";
+  const conversationId = note.conversationId ?? note.sourceConversationId;
 
   return {
     id: String(note._id),
@@ -239,6 +293,7 @@ const mapStagedNoteCard = (note: Record<string, any>) => {
     confidence: note.confidence ?? null,
     createdAt: note.createdAt ?? null,
     updatedAt: note.updatedAt ?? null,
+    conversationId: conversationId ? String(conversationId) : null,
   };
 };
 
@@ -304,10 +359,13 @@ export const createSpaceRepository = async (
 
 //------------------------------------------------------------------------------------------
 
+export type SpaceCountsMode = "all" | "notes" | "tasks" | "none";
+
 export const getUserSpacesByUserIdRepository = async (
   userId: string,
   limit = 10,
   cursor?: string,
+  counts: SpaceCountsMode = "all",
 ) => {
   try {
     const pageSize = Math.min(Math.max(limit, 1), 50);
@@ -327,7 +385,10 @@ export const getUserSpacesByUserIdRepository = async (
       };
     }
 
+    await ensureListIndexes();
+
     const spaces = await CreateSpace.find(query)
+      .select("-__v")
       .sort({ _id: -1 })
       .limit(pageSize + 1)
       .lean();
@@ -345,66 +406,38 @@ export const getUserSpacesByUserIdRepository = async (
     const spaceIdFilter = {
       $in: [...resultSpaceIds, ...resultSpaceIdStrings],
     };
-    const notDeleted = {
-      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+    const countBySpace = async (
+      collectionName: "notes" | "tasks",
+      enabled: boolean,
+    ) => {
+      const counts = new Map<string, number>();
+      if (!enabled || results.length === 0) {
+        return counts;
+      }
+      const rows = await mongoose.connection
+        .collection(collectionName)
+        .aggregate<{ _id?: unknown; count?: number }>([
+          {
+            $match: {
+              userId: createIdFilter(userId),
+              spaceId: spaceIdFilter,
+              ...notDeletedFilter,
+            },
+          },
+          { $group: { _id: "$spaceId", count: { $sum: 1 } } },
+        ])
+        .toArray()
+        .catch(() => []);
+      rows.forEach((row) => counts.set(String(row._id), row.count ?? 0));
+      return counts;
     };
 
-    const taskCounts =
-      results.length > 0
-        ? await mongoose.connection
-            .collection("tasks")
-            .aggregate([
-              {
-                $match: {
-                  userId: createIdFilter(userId),
-                  spaceId: spaceIdFilter,
-                  ...notDeleted,
-                },
-              },
-              {
-                $group: {
-                  _id: "$spaceId",
-                  tasksCount: { $sum: 1 },
-                },
-              },
-            ])
-            .toArray()
-            .catch(() => [])
-        : [];
-    const noteCounts =
-      results.length > 0
-        ? await mongoose.connection
-            .collection("notes")
-            .aggregate([
-              {
-                $match: {
-                  userId: createIdFilter(userId),
-                  spaceId: spaceIdFilter,
-                  ...notDeleted,
-                },
-              },
-              {
-                $group: {
-                  _id: "$spaceId",
-                  notesCount: { $sum: 1 },
-                },
-              },
-            ])
-            .toArray()
-            .catch(() => [])
-        : [];
-    const taskCountBySpaceId = new Map<string, number>();
-    (taskCounts as Array<{ _id?: unknown; tasksCount?: number }>).forEach(
-      item => {
-        taskCountBySpaceId.set(String(item._id), item.tasksCount ?? 0);
-      },
-    );
-    const noteCountBySpaceId = new Map<string, number>();
-    (noteCounts as Array<{ _id?: unknown; notesCount?: number }>).forEach(
-      item => {
-        noteCountBySpaceId.set(String(item._id), item.notesCount ?? 0);
-      },
-    );
+    const includeNotes = counts === "all" || counts === "notes";
+    const includeTasks = counts === "all" || counts === "tasks";
+    const [noteCountBySpaceId, taskCountBySpaceId] = await Promise.all([
+      countBySpace("notes", includeNotes),
+      countBySpace("tasks", includeTasks),
+    ]);
 
     return {
       status: STATUS_CODE.OK,
@@ -412,8 +445,12 @@ export const getUserSpacesByUserIdRepository = async (
       data: {
         spaces: results.map(space => ({
           ...space,
-          tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0,
-          notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0,
+          ...(includeTasks
+            ? { tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0 }
+            : {}),
+          ...(includeNotes
+            ? { notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0 }
+            : {}),
         })),
         nextCursor,
       },
@@ -428,11 +465,15 @@ export const getUserSpacesByUserIdRepository = async (
 
 export const getUserActiveSpaceRepository = async (userId: string) => {
   try {
+    await ensureListIndexes();
+
     const response = await CreateSpace.find({
       userId: userId,
       isListning: true,
       deletedAt: null,
-    }).select("-createdAt -updatedAt -__v");
+    })
+      .select("-createdAt -updatedAt -__v")
+      .lean();
 
     return response ?? [];
   } catch (error) {
@@ -642,32 +683,47 @@ export const getSpaceStatsRepository = async (
   spaceId: string,
 ) => {
   try {
-    const notDeleted = {
-      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-    };
     const baseQuery = {
       userId: createIdFilter(userId),
       spaceId: createIdFilter(spaceId),
-      $and: [notDeleted],
+      ...notDeletedFilter,
     };
 
+    await ensureListIndexes();
+
+    // One pass over the space's tasks yields both the total and the done count.
     const db = mongoose.connection;
-    const [notesCount, tasksCount, doneTasksCount] = await Promise.all([
+    const [notesCount, taskTotals] = await Promise.all([
       db.collection("notes").countDocuments(baseQuery),
-      db.collection("tasks").countDocuments(baseQuery),
-      db.collection("tasks").countDocuments({
-        ...baseQuery,
-        $and: [
-          notDeleted,
+      db
+        .collection("tasks")
+        .aggregate<{ total: number; done: number }>([
+          { $match: baseQuery },
           {
-            $or: [
-              { operation: "DONE" },
-              { status: { $in: ["completed", "DONE", "done"] } },
-            ],
+            $group: {
+              _id: null,
+              total: { $sum: 1 },
+              done: {
+                $sum: {
+                  $cond: [
+                    {
+                      $or: [
+                        { $eq: ["$operation", "DONE"] },
+                        { $in: ["$status", ["completed", "DONE", "done"]] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+            },
           },
-        ],
-      }),
+        ])
+        .toArray(),
     ]);
+    const tasksCount = taskTotals[0]?.total ?? 0;
+    const doneTasksCount = taskTotals[0]?.done ?? 0;
 
     const completionPercentage =
       tasksCount === 0 ? 0 : Math.round((doneTasksCount / tasksCount) * 100);
@@ -817,12 +873,33 @@ export const getNoteWorkspacesRepository = async (userId: string) => {
 
 //------------------------------------------------------------------------------------------------------------------
 
+export const NO_CONVERSATION_KEY = "none";
+
+/**
+ * Notes produced by a recording carry `conversationId`; carried-over notes may
+ * only have `sourceConversationId`. Manual notes have neither.
+ */
+const conversationMatch = (conversationKey: string) => {
+  if (conversationKey === NO_CONVERSATION_KEY) {
+    return { conversationId: null, sourceConversationId: null };
+  }
+
+  const idFilter = createIdFilter(conversationKey);
+  return {
+    $or: [
+      { conversationId: idFilter },
+      { conversationId: null, sourceConversationId: idFilter },
+    ],
+  };
+};
+
 export const getStagedNotesBySpaceRepository = async (
   userId: string,
   spaceId: string,
   limit = 10,
   cursor?: string,
   dateKey?: string,
+  conversationKey?: string,
 ) => {
   try {
     const pageSize = Math.min(Math.max(limit, 1), 50);
@@ -841,17 +918,18 @@ export const getStagedNotesBySpaceRepository = async (
       };
     }
 
-    // Backfill any staged-only notes into official `notes` collection.
-    await mirrorStagedNotesIntoMain(userId, spaceId);
+    const isFirstPage = !cursor;
 
-    const notDeleted = {
-      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-    };
+    // Backfill staged-only notes once per list load (first page), not per page.
+    await Promise.all([
+      ensureListIndexes(),
+      isFirstPage ? mirrorStagedNotesIntoMain(userId, spaceId) : undefined,
+    ]);
 
     const baseQuery: Record<string, any> = {
       userId: createIdFilter(userId),
       spaceId: createIdFilter(spaceId),
-      $and: [notDeleted],
+      $and: [notDeletedFilter],
     };
 
     if (dateKey) {
@@ -871,6 +949,10 @@ export const getStagedNotesBySpaceRepository = async (
       });
     }
 
+    if (conversationKey) {
+      baseQuery.$and.push(conversationMatch(conversationKey));
+    }
+
     const pageQuery = { ...baseQuery };
     if (cursor) {
       pageQuery._id = { $lt: new mongoose.Types.ObjectId(cursor) };
@@ -879,22 +961,41 @@ export const getStagedNotesBySpaceRepository = async (
     const db = mongoose.connection;
     const notesCollection = db.collection("notes");
 
-    // Date-wise (and default) list reads from main `notes` only to avoid
-    // staged+main duplicates. Cursor pagination is scoped to this query.
+    // Reads from main `notes` only to avoid staged+main duplicates. Only the
+    // card fields are returned; the full body is served by getStagedNoteById.
+    // The total is only needed once per list, so later pages skip the count.
     const [pageDocs, total] = await Promise.all([
       notesCollection
-        .find(pageQuery)
-        .project({
-          title: 1,
-          body: 1,
-          confidence: 1,
-          createdAt: 1,
-          updatedAt: 1,
-        })
-        .sort({ _id: -1 })
-        .limit(pageSize + 1)
+        .aggregate([
+          { $match: pageQuery },
+          { $sort: { _id: -1 } },
+          { $limit: pageSize + 1 },
+          {
+            $project: {
+              title: 1,
+              confidence: 1,
+              createdAt: 1,
+              updatedAt: 1,
+              conversationId: 1,
+              sourceConversationId: 1,
+              bodyPreview: {
+                $substrCP: [
+                  {
+                    $trim: {
+                      input: {
+                        $cond: [{ $eq: [{ $type: "$body" }, "string"] }, "$body", ""],
+                      },
+                    },
+                  },
+                  0,
+                  NOTE_PREVIEW_LENGTH,
+                ],
+              },
+            },
+          },
+        ])
         .toArray(),
-      notesCollection.countDocuments(baseQuery),
+      isFirstPage ? notesCollection.countDocuments(baseQuery) : undefined,
     ]);
 
     const hasMore = pageDocs.length > pageSize;
@@ -907,10 +1008,152 @@ export const getStagedNotesBySpaceRepository = async (
     return {
       status: STATUS_CODE.OK,
       data: {
-        notes: results.map(mapStagedNoteCard),
+        notes: results.map(mapNoteListCard),
         nextCursor,
-        total,
+        ...(typeof total === "number" ? { total } : {}),
         ...(dateKey ? { date: dateKey } : {}),
+        ...(conversationKey ? { conversationId: conversationKey } : {}),
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------
+
+export const getNoteConversationsBySpaceRepository = async (
+  userId: string,
+  spaceId: string,
+  limit = 10,
+  cursor?: string,
+) => {
+  try {
+    const pageSize = Math.min(Math.max(limit, 1), 50);
+    const offset = cursor ? Number(cursor) : 0;
+
+    if (!Number.isInteger(offset) || offset < 0) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid cursor value.",
+      };
+    }
+
+    if (!cursor) {
+      await mirrorStagedNotesIntoMain(userId, spaceId);
+    }
+
+    const db = mongoose.connection;
+    const [result] = await db
+      .collection("notes")
+      .aggregate([
+        {
+          $match: {
+            userId: createIdFilter(userId),
+            spaceId: createIdFilter(spaceId),
+            ...notDeletedFilter,
+          },
+        },
+        {
+          $project: {
+            title: 1,
+            createdAt: 1,
+            groupKey: {
+              $toString: {
+                $ifNull: ["$conversationId", "$sourceConversationId"],
+              },
+            },
+          },
+        },
+        { $sort: { createdAt: -1, _id: -1 } },
+        {
+          $group: {
+            _id: "$groupKey",
+            notesCount: { $sum: 1 },
+            latestAt: { $max: "$createdAt" },
+            earliestAt: { $min: "$createdAt" },
+            titles: { $push: "$title" },
+          },
+        },
+        {
+          $project: {
+            notesCount: 1,
+            latestAt: 1,
+            earliestAt: 1,
+            previewTitles: { $slice: ["$titles", 3] },
+          },
+        },
+        { $sort: { latestAt: -1, _id: 1 } },
+        {
+          $facet: {
+            items: [{ $skip: offset }, { $limit: pageSize + 1 }],
+            totals: [
+              {
+                $group: {
+                  _id: null,
+                  groups: { $sum: 1 },
+                  notes: { $sum: "$notesCount" },
+                },
+              },
+            ],
+          },
+        },
+      ])
+      .toArray();
+
+    const items: Array<Record<string, any>> = result?.items ?? [];
+    const totals = result?.totals?.[0] ?? { groups: 0, notes: 0 };
+    const hasMore = items.length > pageSize;
+    const pageItems = items.slice(0, pageSize);
+
+    const conversationObjectIds = pageItems
+      .map(item => item._id)
+      .filter(
+        (key): key is string =>
+          typeof key === "string" && mongoose.isValidObjectId(key),
+      )
+      .map(key => new mongoose.Types.ObjectId(key));
+
+    const conversations = conversationObjectIds.length
+      ? await db
+          .collection("conversations")
+          .find(
+            { _id: { $in: conversationObjectIds } },
+            { projection: { startedAt: 1, stoppedAt: 1, sourceType: 1 } },
+          )
+          .toArray()
+          .catch(() => [])
+      : [];
+
+    const conversationById = new Map(
+      conversations.map(conversation => [String(conversation._id), conversation]),
+    );
+
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        groups: pageItems.map(item => {
+          const key = typeof item._id === "string" ? item._id : null;
+          const conversation = key ? conversationById.get(key) : undefined;
+
+          return {
+            id: key ?? NO_CONVERSATION_KEY,
+            conversationId: key,
+            notesCount: item.notesCount ?? 0,
+            latestAt: item.latestAt ?? null,
+            earliestAt: item.earliestAt ?? null,
+            startedAt: conversation?.startedAt ?? null,
+            stoppedAt: conversation?.stoppedAt ?? null,
+            sourceType: conversation?.sourceType ?? null,
+            previewTitles: (item.previewTitles ?? [])
+              .filter((title: unknown) => typeof title === "string" && title.trim())
+              .map((title: string) => title.trim()),
+          };
+        }),
+        nextCursor: hasMore ? String(offset + pageSize) : null,
+        totalGroups: totals.groups ?? 0,
+        totalNotes: totals.notes ?? 0,
       },
     };
   } catch (error) {
@@ -1192,17 +1435,18 @@ export const getStagedTasksBySpaceRepository = async (
       };
     }
 
-    // Backfill any staged-only tasks into official `tasks` collection.
-    await mirrorStagedTasksIntoMain(userId, spaceId);
+    const isFirstPage = !cursor;
 
-    const notDeleted = {
-      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-    };
+    // Backfill staged-only tasks once per list load (first page), not per page.
+    await Promise.all([
+      ensureListIndexes(),
+      isFirstPage ? mirrorStagedTasksIntoMain(userId, spaceId) : undefined,
+    ]);
 
     const baseQuery: Record<string, any> = {
       userId: createIdFilter(userId),
       spaceId: createIdFilter(spaceId),
-      $and: [notDeleted],
+      $and: [notDeletedFilter],
     };
 
     if (dateKey) {
@@ -1265,7 +1509,7 @@ export const getStagedTasksBySpaceRepository = async (
         .sort({ _id: -1 })
         .limit(pageSize + 1)
         .toArray(),
-      tasksCollection.countDocuments(baseQuery),
+      isFirstPage ? tasksCollection.countDocuments(baseQuery) : undefined,
     ]);
 
     const hasMore = pageDocs.length > pageSize;
@@ -1280,7 +1524,7 @@ export const getStagedTasksBySpaceRepository = async (
       data: {
         tasks: results.map(mapStagedTaskCard),
         nextCursor,
-        total,
+        ...(typeof total === "number" ? { total } : {}),
         ...(dateKey ? { date: dateKey } : {}),
       },
     };

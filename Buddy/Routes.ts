@@ -6,6 +6,7 @@ import {
   deleteSpaceController,
   deleteStagedNoteController,
   deleteStagedTaskController,
+  getNoteConversationsBySpaceController,
   getNoteDateMarkersBySpaceController,
   getNoteWorkspacesController,
   getProfileSummaryController,
@@ -67,6 +68,10 @@ router.get("/getSpaceStats", getSpaceStatsController);
 router.get("/getProfileSummary", getProfileSummaryController);
 router.get("/getNoteWorkspaces", getNoteWorkspacesController);
 router.get("/getStagedNotesBySpace", getStagedNotesBySpaceController);
+router.get(
+  "/getNoteConversationsBySpace",
+  getNoteConversationsBySpaceController,
+);
 router.get("/getNoteDateMarkersBySpace", getNoteDateMarkersBySpaceController);
 router.get("/getStagedNoteById", getStagedNoteByIdController);
 router.post("/delete-staged-note", requireAuth, deleteStagedNoteController);

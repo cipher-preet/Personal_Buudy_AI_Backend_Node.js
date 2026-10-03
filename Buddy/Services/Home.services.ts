@@ -5,6 +5,7 @@ import {
   deleteSpaceRepository,
   deleteStagedNoteRepository,
   deleteStagedTaskRepository,
+  getNoteConversationsBySpaceRepository,
   getNoteDateMarkersBySpaceRepository,
   getNoteWorkspacesRepository,
   getProfileSummaryRepository,
@@ -15,6 +16,7 @@ import {
   getTaskDateMarkersBySpaceRepository,
   getUserActiveSpaceRepository,
   getUserSpacesByUserIdRepository,
+  type SpaceCountsMode,
   startListningRepository,
   updateSpaceRepository,
   updateStagedNoteRepository,
@@ -69,12 +71,14 @@ export const getUserSpacesByUserIdServices = async (
   userId: string,
   limit?: number,
   cursor?: string,
+  counts?: SpaceCountsMode,
 ) => {
   try {
     const response = await getUserSpacesByUserIdRepository(
       userId,
       limit,
       cursor,
+      counts,
     );
     return response;
   } catch (error) {
@@ -157,6 +161,7 @@ export const getStagedNotesBySpaceServices = async (
   limit?: number,
   cursor?: string,
   dateKey?: string,
+  conversationKey?: string,
 ) => {
   try {
     const response = await getStagedNotesBySpaceRepository(
@@ -165,6 +170,29 @@ export const getStagedNotesBySpaceServices = async (
       limit,
       cursor,
       dateKey,
+      conversationKey,
+    );
+    return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getNoteConversationsBySpaceServices = async (
+  userId: string,
+  spaceId: string,
+  limit?: number,
+  cursor?: string,
+) => {
+  try {
+    const response = await getNoteConversationsBySpaceRepository(
+      userId,
+      spaceId,
+      limit,
+      cursor,
     );
     return response;
   } catch (error) {
