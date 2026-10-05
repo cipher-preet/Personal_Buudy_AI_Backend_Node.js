@@ -65,6 +65,13 @@ const meetingSessionSchema = new mongoose.Schema(
     /** A late chunk arrived while a merge was in flight — merge again once it finishes. */
     videoRemergeRequested: { type: Boolean, default: false },
     mergePresentChunkCount: { type: Number, default: null },
+    /** expectedFinalSequence the last enqueued merge covered; later chunks trigger a re-merge. */
+    mergeExpectedSequence: { type: Number, default: null },
+    videoMergeAttempts: { type: Number, default: 0 },
+    /** Last time the client created the session or registered a chunk. */
+    lastActivityAt: { type: Date, default: null },
+    /** Server issued STOP because the client went silent without sending one. */
+    autoFinalizedAt: { type: Date, default: null },
     stopRequestedAt: { type: Date, default: null },
     finalizedAt: { type: Date, default: null },
     clientRequestId: { type: String, default: null },
@@ -83,6 +90,7 @@ meetingSessionSchema.index({ userId: 1, createdAt: -1 });
 meetingSessionSchema.index({ userId: 1, _id: -1 });
 meetingSessionSchema.index({ userId: 1, spaceId: 1, _id: -1 });
 meetingSessionSchema.index({ status: 1, updatedAt: 1 });
+meetingSessionSchema.index({ status: 1, expectedFinalSequence: 1, lastActivityAt: 1 });
 meetingSessionSchema.index(
   { userId: 1, clientRequestId: 1 },
   { unique: true, sparse: true },

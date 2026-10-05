@@ -184,6 +184,56 @@ export const markStaleMeetings = async ({
   return result.modifiedCount;
 };
 
+/**
+ * Sessions with uploaded chunks whose client never sent STOP and went silent.
+ * Legacy rows without lastActivityAt fall back to createdAt; the service re-checks
+ * real chunk activity before finalizing.
+ */
+export const findAbandonedMeetings = async ({
+  cutoff,
+  statuses,
+  limit = 25,
+}: {
+  cutoff: Date;
+  statuses: MeetingStatusType[];
+  limit?: number;
+}) => {
+  return MeetingSession.find({
+    status: { $in: statuses },
+    expectedFinalSequence: null,
+    stopRequestedAt: null,
+    lastReceivedSequence: { $gt: 0 },
+    $or: [
+      { lastActivityAt: { $lte: cutoff } },
+      { lastActivityAt: null, createdAt: { $lte: cutoff } },
+    ],
+  })
+    .sort({ createdAt: 1 })
+    .limit(limit);
+};
+
+/** Merges that were enqueued or started but never reported back (worker crash / lost message). */
+export const findStuckVideoMerges = async ({
+  pendingCutoff,
+  runningCutoff,
+  limit = 25,
+}: {
+  pendingCutoff: Date;
+  runningCutoff: Date;
+  limit?: number;
+}) => {
+  return MeetingSession.find({
+    expectedFinalSequence: { $ne: null },
+    finalRecordingS3Key: null,
+    $or: [
+      { videoMergeStatus: VideoMergeStatus.PENDING, updatedAt: { $lte: pendingCutoff } },
+      { videoMergeStatus: VideoMergeStatus.RUNNING, updatedAt: { $lte: runningCutoff } },
+    ],
+  })
+    .sort({ updatedAt: 1 })
+    .limit(limit);
+};
+
 /** Meetings waiting on late uploads past the post-STOP grace window. */
 export const findMeetingsNeedingUploadAdvance = async ({
   cutoff,

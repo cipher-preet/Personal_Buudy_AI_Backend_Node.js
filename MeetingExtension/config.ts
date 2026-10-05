@@ -32,6 +32,12 @@ export const getMeetingConfig = () => {
     staleAfterMinutes: readInt("MEETING_RECORDING_STALE_AFTER_MINUTES", 180),
     // After STOP, wait this long for late chunk uploads before finalizing with gaps.
     uploadWaitTimeoutSeconds: readInt("MEETING_UPLOAD_WAIT_TIMEOUT_SECONDS", 180),
+    // A session with uploaded chunks but no STOP and no activity for this long is
+    // finalized by the server so the recording is never lost.
+    autoFinalizeAfterMinutes: readInt("MEETING_AUTO_FINALIZE_AFTER_MINUTES", 10),
+    videoMergeMaxAttempts: readInt("MEETING_VIDEO_MERGE_MAX_ATTEMPTS", 6),
+    videoMergePendingStaleMinutes: readInt("MEETING_VIDEO_MERGE_PENDING_STALE_MINUTES", 15),
+    videoMergeRunningStaleMinutes: readInt("MEETING_VIDEO_MERGE_RUNNING_STALE_MINUTES", 60),
     sourceChunkRetentionDays: readInt("MEETING_SOURCE_CHUNK_RETENTION_DAYS", 7),
     videoFinalizationEnabled: readBool(
       "MEETING_VIDEO_FINALIZATION_ENABLED",

@@ -18,7 +18,7 @@ import { saveOptionalAuthDeviceToken } from "../../Buddy/Repository/DeviceToken.
 
 const googleClient = new OAuth2Client();
 
-const buildAuthPayload = (user: any, isNewUser: boolean) => ({
+export const buildAuthPayload = (user: any, isNewUser: boolean) => ({
   token: createAuthToken({
     userId: user._id.toString(),
     provider: user.provider,
@@ -31,7 +31,7 @@ const buildAuthPayload = (user: any, isNewUser: boolean) => ({
   avatar: user.avatar,
 });
 
-const setAuthSession = (req: Request, user: any) => {
+export const setAuthSession = (req: Request, user: any) => {
   (req.session as any).user = {
     id: user._id.toString(),
     email: user.email || "",
@@ -362,6 +362,40 @@ export default loginController;
 
 //-----------------------------------------------------------------------------------------
 
+export const upsertGoogleUser = async (payload: {
+  sub: string;
+  email: string;
+  name?: string;
+  picture?: string;
+  email_verified?: boolean;
+}) => {
+  const email = payload.email.trim().toLowerCase();
+  let user: any = await User.findOne({
+    $or: [{ googleId: payload.sub }, { email }],
+  });
+  let isNewUser = false;
+
+  if (!user) {
+    user = await User.create({
+      name: payload.name,
+      email,
+      googleId: payload.sub,
+      avatar: payload.picture,
+      provider: "google",
+      isVerified: payload.email_verified ?? true,
+    });
+    isNewUser = true;
+  } else if (!user.googleId) {
+    user.googleId = payload.sub;
+    user.avatar = user.avatar || payload.picture;
+    user.name = user.name || payload.name;
+    user.isVerified = true;
+    await user.save();
+  }
+
+  return { user, isNewUser };
+};
+
 const googleLoginController = async (
   req: Request,
   res: Response,
@@ -402,29 +436,13 @@ const googleLoginController = async (
       );
     }
 
-    const email = payload.email.trim().toLowerCase();
-    let user: any = await User.findOne({
-      $or: [{ googleId: payload.sub }, { email }],
+    const { user, isNewUser } = await upsertGoogleUser({
+      sub: payload.sub,
+      email: payload.email,
+      name: payload.name,
+      picture: payload.picture,
+      email_verified: payload.email_verified,
     });
-    let isNewUser = false;
-
-    if (!user) {
-      user = await User.create({
-        name: payload.name,
-        email,
-        googleId: payload.sub,
-        avatar: payload.picture,
-        provider: "google",
-        isVerified: payload.email_verified ?? true,
-      });
-      isNewUser = true;
-    } else if (!user.googleId) {
-      user.googleId = payload.sub;
-      user.avatar = user.avatar || payload.picture;
-      user.name = user.name || payload.name;
-      user.isVerified = true;
-      await user.save();
-    }
 
     setAuthSession(req, user);
 

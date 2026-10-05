@@ -14,6 +14,11 @@ import {
   updateAvatarController,
   verifyOTPController,
 } from "./Controllers/Auth.controller.js";
+import {
+  exchangeGoogleDesktopLoginController,
+  googleDesktopLoginCallbackController,
+  startGoogleDesktopLoginController,
+} from "./Controllers/GoogleDesktopLogin.controller.js";
 import { requireAuth } from "../MIddleware/Auth/Auth.middleware.js";
 
 const router = Router();
@@ -37,6 +42,9 @@ router.post("/check-phone", checkPhoneController);
 router.post("/verify-otp", verifyOTPController);
 router.post("/login", loginController);
 router.post("/google", googleLoginController);
+router.get("/google/desktop/start", startGoogleDesktopLoginController);
+router.get("/google/desktop/callback", googleDesktopLoginCallbackController);
+router.post("/google/desktop/exchange", exchangeGoogleDesktopLoginController);
 router.post("/onboarding", completeOnboardingController);
 router.get("/checkauth", requireAuth, checkAuthController);
 router.get("/me", requireAuth, getMeController);

@@ -5,6 +5,7 @@ import { MeetingError } from "../errors.js";
 import { MeetingErrorCode, MeetingStatus } from "../constants.js";
 import { canAcceptUploads, missingSequences } from "../state.js";
 import { flattenTranscriptSegments } from "../transcript.js";
+import { lastActivityMs, planAutoFinalize } from "./MeetingRecording.services.js";
 
 const USER_A = "507f1f77bcf86cd799439011";
 const USER_B = "507f1f77bcf86cd799439012";
@@ -186,5 +187,58 @@ describe("meeting recording service contracts", () => {
   it("detects the common missing-first-chunk gap from production", () => {
     // STT ran for 2..8 while seq 1 never uploaded — the prior deadlock case.
     assert.deepEqual(missingSequences(8, [2, 3, 4, 5, 6, 7, 8]), [1]);
+  });
+});
+
+describe("abandoned session auto-finalize", () => {
+  const now = Date.parse("2026-10-05T12:00:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
+  const uploaded = [
+    { sequence: 1, mediaKind: "muxed", endOffsetMs: 20_000, uploadedAt: minutesAgo(50) },
+    { sequence: 3, mediaKind: "muxed", endOffsetMs: 60_000, uploadedAt: minutesAgo(45) },
+    { sequence: 2, mediaKind: "muxed", endOffsetMs: 40_000, uploadedAt: minutesAgo(48) },
+  ];
+
+  it("synthesizes STOP from the highest uploaded chunk once the client goes silent", () => {
+    const plan = planAutoFinalize(
+      { status: MeetingStatus.RECORDING, expectedFinalSequence: null, stopRequestedAt: null },
+      uploaded,
+      30,
+      now,
+    );
+    assert.ok(plan);
+    assert.equal(plan.finalSequence, 3);
+    assert.equal(plan.recordedMs, 60_000);
+    assert.equal(plan.stoppedAt.toISOString(), minutesAgo(45).toISOString());
+  });
+
+  it("leaves live recordings alone", () => {
+    const plan = planAutoFinalize(
+      { status: MeetingStatus.RECORDING, lastActivityAt: minutesAgo(2) },
+      uploaded,
+      30,
+      now,
+    );
+    assert.equal(plan, null);
+  });
+
+  it("never overrides a real client STOP", () => {
+    const plan = planAutoFinalize(
+      { status: MeetingStatus.WAITING_FOR_UPLOADS, expectedFinalSequence: 5, stopRequestedAt: minutesAgo(60) },
+      uploaded,
+      30,
+      now,
+    );
+    assert.equal(plan, null);
+  });
+
+  it("needs at least one uploaded chunk", () => {
+    assert.equal(planAutoFinalize({ status: MeetingStatus.INTERRUPTED }, [], 30, now), null);
+  });
+
+  it("prefers explicit lastActivityAt, then newest chunk upload, then updatedAt", () => {
+    assert.equal(lastActivityMs({ lastActivityAt: minutesAgo(5) }, uploaded), minutesAgo(5).getTime());
+    assert.equal(lastActivityMs({ updatedAt: minutesAgo(1) }, uploaded), minutesAgo(45).getTime());
+    assert.equal(lastActivityMs({ updatedAt: minutesAgo(1) }, []), minutesAgo(1).getTime());
   });
 });

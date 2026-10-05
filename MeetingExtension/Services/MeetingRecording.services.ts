@@ -48,10 +48,12 @@ import {
 import {
   createMeetingSession,
   deleteMeetingSessionForUser,
+  findAbandonedMeetings,
   findMeetingByClientRequestId,
   findMeetingById,
   findMeetingsNeedingUploadAdvance,
   findOwnedSpace,
+  findStuckVideoMerges,
   listMeetingsForUser,
   markStaleMeetings,
 } from "../Repository/MeetingSession.repository.js";
@@ -87,6 +89,73 @@ const spaceIdForResponse = (spaceId: unknown): string | null =>
 
 /** A RECORDING session with no activity for this long is treated as abandoned and deletable. */
 const ACTIVE_RECORDING_GRACE_MS = 2 * 60_000;
+
+/** Pre-STOP statuses the server may auto-finalize once the client goes silent. */
+const AUTO_FINALIZE_STATUSES: MeetingStatus[] = [
+  MeetingStatus.CREATED,
+  MeetingStatus.RECORDING,
+  MeetingStatus.STOP_REQUESTED,
+  MeetingStatus.WAITING_FOR_UPLOADS,
+  MeetingStatus.INTERRUPTED,
+];
+
+type UploadedChunkRow = {
+  sequence: number;
+  mediaKind?: string | null;
+  endOffsetMs?: number | null;
+  uploadedAt?: Date | string | null;
+};
+
+const toMs = (value: unknown) => {
+  if (!value) {
+    return NaN;
+  }
+  return new Date(value as string | Date).getTime();
+};
+
+/** Best signal of when the client last did anything for this meeting. */
+export const lastActivityMs = (meeting: Record<string, any>, uploaded: UploadedChunkRow[]) => {
+  const explicit = toMs(meeting.lastActivityAt);
+  if (Number.isFinite(explicit)) {
+    return explicit;
+  }
+  const lastUpload = Math.max(...uploaded.map((row) => toMs(row.uploadedAt)).filter(Number.isFinite));
+  if (Number.isFinite(lastUpload)) {
+    return lastUpload;
+  }
+  return toMs(meeting.updatedAt || meeting.createdAt);
+};
+
+/**
+ * Decide whether a STOP-less session is abandoned and, if so, what STOP to synthesize.
+ * Returns null while the session may still be alive.
+ */
+export const planAutoFinalize = (
+  meeting: Record<string, any>,
+  uploaded: UploadedChunkRow[],
+  autoFinalizeAfterMinutes: number,
+  now = Date.now(),
+) => {
+  if (
+    meeting.expectedFinalSequence != null ||
+    meeting.stopRequestedAt ||
+    !AUTO_FINALIZE_STATUSES.includes(meeting.status as MeetingStatus) ||
+    !uploaded.length
+  ) {
+    return null;
+  }
+  const lastActivity = lastActivityMs(meeting, uploaded);
+  if (!Number.isFinite(lastActivity) || now - lastActivity < autoFinalizeAfterMinutes * 60_000) {
+    return null;
+  }
+  return {
+    finalSequence: Math.max(...uploaded.map((row) => row.sequence)),
+    recordedMs: Math.max(0, ...uploaded.map((row) => Number(row.endOffsetMs) || 0)),
+    // Backdated so the post-STOP upload grace window is already over.
+    stoppedAt: new Date(lastActivity),
+    idleMinutes: Math.round((now - lastActivity) / 60_000),
+  };
+};
 
 export type S3Port = {
   hasConfig: () => boolean;
@@ -265,6 +334,7 @@ export class MeetingRecordingService {
         64,
       ),
       clientRequestId: clientRequestId || null,
+      lastActivityAt: new Date(),
     });
 
     logMeetingEvent("meeting_session_created", {
@@ -298,6 +368,9 @@ export class MeetingRecordingService {
     }
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     const sequence = parseSequence(body.sequence);
+    if (this.extendAutoFinalizedSequence(meeting, sequence)) {
+      await meeting.save();
+    }
     if (
       !canAcceptUploads(meeting.status as MeetingStatus) &&
       !isLateRecordedChunk(meeting as { status: MeetingStatus; expectedFinalSequence?: number | null }, sequence)
@@ -390,6 +463,7 @@ export class MeetingRecordingService {
     await ensureMeetingChunkIndexes();
     const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     const sequence = parseSequence(sequenceRaw);
+    this.extendAutoFinalizedSequence(meeting, sequence);
     const mimeHint = body.mimeType
       ? assertAllowedMimeType(body.mimeType)
       : String(meeting.recordingMimeType || "video/webm");
@@ -572,11 +646,14 @@ export class MeetingRecordingService {
     });
 
     meeting.lastReceivedSequence = Math.max(meeting.lastReceivedSequence || 0, sequence);
+    meeting.lastActivityAt = new Date();
     meeting.totalBytes = (meeting.totalBytes || 0) + (claimed.enqueuedNow ? head.sizeBytes : 0);
     await refreshChunkCounters(meeting);
     const carriesVideo = mediaKind === MeetingMediaKind.VIDEO || mediaKind === MeetingMediaKind.MUXED;
     if (claimed.enqueuedNow && carriesVideo) {
-      this.requestRemergeForLateChunk(meeting, sequence);
+      const beyondLastMerge =
+        meeting.mergeExpectedSequence != null && sequence > Number(meeting.mergeExpectedSequence);
+      this.requestRemergeForLateChunk(meeting, sequence, beyondLastMerge);
     }
     if (lateChunk) {
       // Past the upload phase: only rebuild the video, never re-drive meeting status.
@@ -627,6 +704,21 @@ export class MeetingRecordingService {
     const finalSequence = parseSequence(body.finalSequence);
     const durationMs = parseNonNegativeInt(body.durationMs, "durationMs", false);
     const endedAt = parseIsoDate(body.endedAt, "endedAt");
+
+    if (meeting.autoFinalizedAt) {
+      // The client's real STOP arrived after the server already finalized it.
+      const extended = this.extendAutoFinalizedSequence(meeting, finalSequence);
+      meeting.durationMs = durationMs ?? meeting.durationMs;
+      meeting.endedAt = endedAt ?? meeting.endedAt;
+      await meeting.save();
+      logMeetingEvent("meeting_stop_after_auto_finalize", {
+        meetingSessionId: String(meeting._id),
+        userId: ownerId,
+        finalSequence,
+        extended,
+        status: meeting.status,
+      });
+    }
 
     if (
       meeting.status === MeetingStatus.READY ||
@@ -696,11 +788,7 @@ export class MeetingRecordingService {
     const conversation = await getConversation(String(meeting._id));
     const artifacts = await getArtifactCounts(String(meeting._id));
     await this.syncFromConversation(meeting, conversation);
-    if (
-      meeting.stopRequestedAt &&
-      meeting.expectedFinalSequence != null &&
-      !meeting.finalRecordingS3Key
-    ) {
+    if (!meeting.finalRecordingS3Key) {
       try {
         await this.ensureVideoMergeEnqueued(meeting, getMeetingConfig(), "detail");
       } catch {
@@ -906,10 +994,7 @@ export class MeetingRecordingService {
         MeetingErrorCode.MEETING_PLAYBACK_NOT_READY,
         "Final recording is not available yet.",
         409,
-        {
-          recordingAvailable: false,
-          videoMergeStatus: meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED,
-        },
+        this.playbackNotReadyDetails(meeting, config),
       );
     }
     const signed = await this.s3.presignGet({
@@ -935,10 +1020,7 @@ export class MeetingRecordingService {
         MeetingErrorCode.MEETING_PLAYBACK_NOT_READY,
         "Final recording is not available yet.",
         409,
-        {
-          recordingAvailable: false,
-          videoMergeStatus: meeting.videoMergeStatus,
-        },
+        this.playbackNotReadyDetails(meeting, getMeetingConfig()),
       );
     }
 
@@ -1025,7 +1107,9 @@ export class MeetingRecordingService {
 
   async scanStaleSessions() {
     const config = getMeetingConfig();
+    const autoFinalized = await this.scanAbandonedSessions(config);
     const advanced = await this.scanUploadWaitTimeouts(config);
+    const requeued = await this.scanStuckVideoMerges(config);
     const cutoff = new Date(Date.now() - config.staleAfterMinutes * 60_000);
     const interrupted = await markStaleMeetings({
       cutoff,
@@ -1035,7 +1119,69 @@ export class MeetingRecordingService {
         MeetingStatus.WAITING_FOR_UPLOADS,
       ],
     });
-    return advanced + interrupted;
+    return autoFinalized + advanced + requeued + interrupted;
+  }
+
+  /** Finalize sessions whose client stopped talking to us without ever sending STOP. */
+  async scanAbandonedSessions(config: ReturnType<typeof getMeetingConfig> = getMeetingConfig()) {
+    const cutoff = new Date(Date.now() - config.autoFinalizeAfterMinutes * 60_000);
+    const meetings = await findAbandonedMeetings({ cutoff, statuses: AUTO_FINALIZE_STATUSES });
+    let finalized = 0;
+    for (const meeting of meetings) {
+      try {
+        if (await this.autoFinalizeIfAbandoned(meeting, config, "scanner")) {
+          finalized += 1;
+        }
+      } catch (error) {
+        logMeetingEvent("meeting_auto_finalize_failed", {
+          meetingSessionId: String(meeting._id),
+          message: error instanceof Error ? error.message : "auto finalize failed",
+        });
+      }
+    }
+    return finalized;
+  }
+
+  /** Re-enqueue merges whose worker never reported back. */
+  async scanStuckVideoMerges(config: ReturnType<typeof getMeetingConfig> = getMeetingConfig()) {
+    if (!config.videoFinalizationEnabled) {
+      return 0;
+    }
+    const now = Date.now();
+    const meetings = await findStuckVideoMerges({
+      pendingCutoff: new Date(now - config.videoMergePendingStaleMinutes * 60_000),
+      runningCutoff: new Date(now - config.videoMergeRunningStaleMinutes * 60_000),
+    });
+    let requeued = 0;
+    for (const meeting of meetings) {
+      try {
+        // RUNNING that never finished means the worker crashed mid-merge — a real attempt,
+        // capped so a crash-looping merge stops. PENDING just means the job was never
+        // picked up (worker down/backlog); keep re-sending it without burning attempts.
+        const crashedMidMerge = meeting.videoMergeStatus === VideoMergeStatus.RUNNING;
+        if (crashedMidMerge && (meeting.videoMergeAttempts || 0) >= config.videoMergeMaxAttempts) {
+          meeting.videoMergeStatus = VideoMergeStatus.FAILED;
+          meeting.lastErrorCode = "MEETING_VIDEO_MERGE_STUCK";
+          meeting.lastErrorMessage = "Video merge never completed after repeated attempts.";
+          await meeting.save();
+          continue;
+        }
+        logMeetingEvent("meeting_video_merge_stuck", {
+          meetingSessionId: String(meeting._id),
+          videoMergeStatus: meeting.videoMergeStatus,
+          attempts: meeting.videoMergeAttempts || 0,
+        });
+        await this.publishVideoMerge(meeting, config, "stuck_merge_scanner", true, crashedMidMerge);
+        await meeting.save();
+        requeued += 1;
+      } catch (error) {
+        logMeetingEvent("meeting_video_merge_requeue_failed", {
+          meetingSessionId: String(meeting._id),
+          message: error instanceof Error ? error.message : "requeue failed",
+        });
+      }
+    }
+    return requeued;
   }
 
   /** Advance meetings stuck in WAITING_FOR_UPLOADS after the post-STOP grace window. */
@@ -1060,16 +1206,105 @@ export class MeetingRecordingService {
     return advanced;
   }
 
+  /**
+   * Last-resort STOP for sessions the client abandoned (browser closed, extension
+   * crashed, STOP request lost) so the recording is still merged and processed.
+   * Returns true when the meeting was finalized.
+   */
+  private async autoFinalizeIfAbandoned(
+    meeting: mongoose.Document & Record<string, any>,
+    config: ReturnType<typeof getMeetingConfig>,
+    source: string,
+  ) {
+    if (meeting.expectedFinalSequence != null || meeting.stopRequestedAt) {
+      return false;
+    }
+    const uploaded = (await listUploadedSequences(meeting._id)) as UploadedChunkRow[];
+    const plan = planAutoFinalize(meeting, uploaded, config.autoFinalizeAfterMinutes);
+    if (!plan) {
+      return false;
+    }
+
+    meeting.expectedFinalSequence = plan.finalSequence;
+    meeting.stopRequestedAt = plan.stoppedAt;
+    meeting.endedAt = meeting.endedAt || plan.stoppedAt;
+    meeting.durationMs = meeting.durationMs ?? (plan.recordedMs || null);
+    meeting.autoFinalizedAt = new Date();
+    meeting.status = MeetingStatus.STOP_REQUESTED;
+
+    logMeetingEvent("meeting_auto_finalized", {
+      meetingSessionId: String(meeting._id),
+      userId: String(meeting.userId),
+      source,
+      finalSequence: plan.finalSequence,
+      uploadedCount: uploaded.length,
+      idleMinutes: plan.idleMinutes,
+    });
+
+    await this.maybeAdvanceAfterUploads(meeting, config);
+    return true;
+  }
+
+  /**
+   * An auto-finalized meeting turned out to still have chunks coming (client was
+   * offline, not gone). Raise the final sequence so those chunks are accepted.
+   */
+  private extendAutoFinalizedSequence(
+    meeting: mongoose.Document & Record<string, any>,
+    sequence: number,
+  ) {
+    if (
+      !meeting.autoFinalizedAt ||
+      meeting.expectedFinalSequence == null ||
+      sequence <= Number(meeting.expectedFinalSequence)
+    ) {
+      return false;
+    }
+    logMeetingEvent("meeting_auto_finalized_sequence_extended", {
+      meetingSessionId: String(meeting._id),
+      previousFinalSequence: meeting.expectedFinalSequence,
+      finalSequence: sequence,
+    });
+    meeting.expectedFinalSequence = sequence;
+    return true;
+  }
+
+  private playbackNotReadyDetails(
+    meeting: Record<string, any>,
+    config: ReturnType<typeof getMeetingConfig>,
+  ) {
+    const videoMergeStatus = meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED;
+    let reason = "processing";
+    if (!meeting.lastReceivedSequence) {
+      reason = "waiting_for_first_upload";
+    } else if (meeting.expectedFinalSequence == null) {
+      reason = meeting.status === MeetingStatus.RECORDING ? "recording" : "waiting_for_stop";
+    } else if (videoMergeStatus === VideoMergeStatus.FAILED) {
+      reason = "merge_failed";
+    }
+    return {
+      recordingAvailable: false,
+      videoMergeStatus,
+      reason,
+      recordingStatus: meeting.status,
+      uploadedChunks: meeting.uploadedChunks ?? 0,
+      expectedFinalSequence: meeting.expectedFinalSequence ?? null,
+      retryable: reason !== "merge_failed" || (meeting.videoMergeAttempts || 0) < config.videoMergeMaxAttempts,
+      retryAfterSeconds: reason === "processing" ? 10 : 30,
+    };
+  }
+
   private async publishVideoMerge(
     meeting: mongoose.Document & Record<string, any>,
     config: ReturnType<typeof getMeetingConfig>,
     source: string,
+    allowMissingSequences = true,
+    countAttempt = true,
   ) {
     const expected = Number(meeting.expectedFinalSequence || 0);
     if (!expected) {
       return;
     }
-    meeting.videoMergeStatus = VideoMergeStatus.PENDING;
     await this.queue.publish(
       config.meetingMergeStream,
       buildEnvelope({
@@ -1082,7 +1317,7 @@ export class MeetingRecordingService {
           meetingSessionId: String(meeting._id),
           userId: String(meeting.userId),
           expectedFinalSequence: expected,
-          allowMissingSequences: true,
+          allowMissingSequences,
           s3Prefix: config.s3Prefix,
           finalRecordingS3Key: buildFinalRecordingS3Key({
             prefix: config.s3Prefix,
@@ -1092,11 +1327,27 @@ export class MeetingRecordingService {
         },
       }),
     );
+    // Only mark PENDING once the job is really queued, so a failed publish is retried.
+    meeting.videoMergeStatus = VideoMergeStatus.PENDING;
+    meeting.mergeExpectedSequence = expected;
+    // Re-sending a job the worker never picked up is not a failed merge attempt.
+    if (countAttempt) {
+      meeting.videoMergeAttempts = (meeting.videoMergeAttempts || 0) + 1;
+    }
     logMeetingEvent("meeting_video_merge_enqueued", {
       meetingSessionId: String(meeting._id),
       userId: String(meeting.userId),
       source,
+      expectedFinalSequence: expected,
+      attempt: meeting.videoMergeAttempts,
     });
+  }
+
+  private canRetryFailedMerge(
+    meeting: Record<string, any>,
+    config: ReturnType<typeof getMeetingConfig>,
+  ) {
+    return (meeting.videoMergeAttempts || 0) < config.videoMergeMaxAttempts;
   }
 
   /**
@@ -1106,6 +1357,7 @@ export class MeetingRecordingService {
   private requestRemergeForLateChunk(
     meeting: mongoose.Document & Record<string, any>,
     sequence: number,
+    beyondLastMerge = false,
   ) {
     const status = String(meeting.videoMergeStatus || VideoMergeStatus.NOT_STARTED);
     if (status === VideoMergeStatus.PENDING || status === VideoMergeStatus.RUNNING) {
@@ -1117,7 +1369,7 @@ export class MeetingRecordingService {
       const missing: number[] = Array.isArray(meeting.mergeMissingSequences)
         ? meeting.mergeMissingSequences
         : [];
-      if (!missing.includes(sequence)) {
+      if (!beyondLastMerge && !missing.includes(sequence)) {
         return;
       }
     } else if (status !== VideoMergeStatus.FAILED) {
@@ -1180,6 +1432,13 @@ export class MeetingRecordingService {
       return;
     }
 
+    if (meeting.expectedFinalSequence == null || !meeting.stopRequestedAt) {
+      // No STOP yet: only the abandoned-session fallback may finalize. Never advance a
+      // live recording here — that used to flip it to WAITING_FOR_UPLOADS on every poll.
+      await this.autoFinalizeIfAbandoned(meeting, config, reason);
+      return;
+    }
+
     // Also advance AI/finalization when possible.
     await this.maybeAdvanceAfterUploads(meeting, config);
     if (meeting.finalRecordingS3Key) {
@@ -1203,7 +1462,7 @@ export class MeetingRecordingService {
       Date.now() - new Date(meeting.updatedAt).getTime() > 120_000;
     const canEnqueue =
       status === VideoMergeStatus.NOT_STARTED ||
-      status === VideoMergeStatus.FAILED ||
+      (status === VideoMergeStatus.FAILED && this.canRetryFailedMerge(meeting, config)) ||
       !meeting.videoMergeStatus ||
       pendingStale;
 
@@ -1222,42 +1481,14 @@ export class MeetingRecordingService {
     if (!expected || videoSeqs.length === 0 || !canEnqueue) {
       return;
     }
-    if (!meeting.stopRequestedAt && !meeting.endedAt) {
-      // Still recording — do not merge yet.
-      return;
-    }
-
-    meeting.videoMergeStatus = VideoMergeStatus.PENDING;
-    await this.queue.publish(
-      config.meetingMergeStream,
-      buildEnvelope({
-        eventId: `meeting:${String(meeting._id)}:merge:${Date.now()}`,
-        eventType: "meeting.video.merge.requested",
-        userId: String(meeting.userId),
-        spaceId: spaceIdForEvent(meeting.spaceId),
-        conversationId: String(meeting._id),
-        payload: {
-          meetingSessionId: String(meeting._id),
-          userId: String(meeting.userId),
-          expectedFinalSequence: expected,
-          allowMissingSequences: true,
-          s3Prefix: config.s3Prefix,
-          finalRecordingS3Key: buildFinalRecordingS3Key({
-            prefix: config.s3Prefix,
-            userId: String(meeting.userId),
-            meetingSessionId: String(meeting._id),
-          }),
-        },
-      }),
+    await this.publishVideoMerge(
+      meeting,
+      config,
+      pendingStale ? `${reason}_requeue` : reason,
+      true,
+      !pendingStale,
     );
     await meeting.save();
-    logMeetingEvent("meeting_video_merge_enqueued", {
-      meetingSessionId: String(meeting._id),
-      userId: String(meeting.userId),
-      source: reason,
-      uploadedVideoCount: videoSeqs.length,
-      requeue: pendingStale,
-    });
   }
 
   private async maybeAdvanceAfterUploads(
@@ -1367,36 +1598,14 @@ export class MeetingRecordingService {
       config.videoFinalizationEnabled &&
       (meeting.videoMergeStatus === VideoMergeStatus.NOT_STARTED ||
         !meeting.videoMergeStatus ||
-        meeting.videoMergeStatus === VideoMergeStatus.FAILED)
+        (meeting.videoMergeStatus === VideoMergeStatus.FAILED && this.canRetryFailedMerge(meeting, config)))
     ) {
-      meeting.videoMergeStatus = VideoMergeStatus.PENDING;
-      await this.queue.publish(
-        config.meetingMergeStream,
-        buildEnvelope({
-          eventId: `meeting:${String(meeting._id)}:merge:${Date.now()}`,
-          eventType: "meeting.video.merge.requested",
-          userId: String(meeting.userId),
-          spaceId: spaceIdForEvent(meeting.spaceId),
-          conversationId: String(meeting._id),
-          payload: {
-            meetingSessionId: String(meeting._id),
-            userId: String(meeting.userId),
-            expectedFinalSequence: expected,
-            allowMissingSequences: missingVideoAll.length > 0,
-            s3Prefix: config.s3Prefix,
-            finalRecordingS3Key: buildFinalRecordingS3Key({
-              prefix: config.s3Prefix,
-              userId: String(meeting.userId),
-              meetingSessionId: String(meeting._id),
-            }),
-          },
-        }),
+      await this.publishVideoMerge(
+        meeting,
+        config,
+        `uploads_advanced:missing=${missingVideoAll.length}`,
+        missingVideoAll.length > 0,
       );
-      logMeetingEvent("meeting_video_merge_enqueued", {
-        meetingSessionId: String(meeting._id),
-        userId: String(meeting.userId),
-        missingVideoCount: missingVideoAll.length,
-      });
     }
 
     const uploadsIncomplete =

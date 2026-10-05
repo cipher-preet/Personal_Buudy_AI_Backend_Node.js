@@ -162,7 +162,7 @@ export const listUploadedSequences = async (
     query.mediaKind = { $in: mediaKinds };
   }
   const rows = await MeetingRecordingChunk.find(query)
-    .select({ sequence: 1, sizeBytes: 1, mediaKind: 1 })
+    .select({ sequence: 1, sizeBytes: 1, mediaKind: 1, endOffsetMs: 1, uploadedAt: 1 })
     .lean();
   return rows;
 };
