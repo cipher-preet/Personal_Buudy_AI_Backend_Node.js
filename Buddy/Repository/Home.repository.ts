@@ -269,11 +269,17 @@ const NOTE_PREVIEW_LENGTH = 140;
 
 const mapNoteListCard = (note: Record<string, any>) => {
   const conversationId = note.conversationId ?? note.sourceConversationId;
+  const body = typeof note.body === "string" ? note.body.trim() : "";
+  const bodyPreview =
+    typeof note.bodyPreview === "string" && note.bodyPreview
+      ? note.bodyPreview
+      : body.slice(0, NOTE_PREVIEW_LENGTH);
 
   return {
     id: String(note._id),
     title: note.title ?? "",
-    bodyPreview: typeof note.bodyPreview === "string" ? note.bodyPreview : "",
+    body,
+    bodyPreview,
     confidence: note.confidence ?? null,
     createdAt: note.createdAt ?? null,
     updatedAt: note.updatedAt ?? null,
@@ -961,8 +967,8 @@ export const getStagedNotesBySpaceRepository = async (
     const db = mongoose.connection;
     const notesCollection = db.collection("notes");
 
-    // Reads from main `notes` only to avoid staged+main duplicates. Only the
-    // card fields are returned; the full body is served by getStagedNoteById.
+    // Reads from main `notes` only to avoid staged+main duplicates.
+    // Full body is included so the home cards can render complete notes.
     // The total is only needed once per list, so later pages skip the count.
     const [pageDocs, total] = await Promise.all([
       notesCollection
@@ -973,6 +979,7 @@ export const getStagedNotesBySpaceRepository = async (
           {
             $project: {
               title: 1,
+              body: 1,
               confidence: 1,
               createdAt: 1,
               updatedAt: 1,

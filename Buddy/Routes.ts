@@ -43,6 +43,7 @@ import {
 } from "./Controllers/CalendarEvent.Controller.js";
 import { getCalendarFeedController } from "./Controllers/CalendarFeed.Controller.js";
 import { streamConversationStatusEvents } from "./Services/ConversationStatusEvents.service.js";
+import { streamMindmapStatusEvents } from "./Services/MindmapStatusEvents.service.js";
 import { getDailyBriefingController, forceGenerateDailyBriefingController } from "./Controllers/DailyBriefing.Controller.js";
 import { submitFeedbackController } from "./Controllers/Feedback.Controller.js";
 import { raiseSupportTicketController } from "./Controllers/SupportTicket.Controller.js";
@@ -62,6 +63,11 @@ router.get(
   "/conversation-status-events",
   requireAuth,
   streamConversationStatusEvents,
+);
+router.get(
+  "/mindmap-status-events",
+  requireAuth,
+  streamMindmapStatusEvents,
 );
 router.get("/search", requireAuth, searchWorkspaceController);
 router.get("/getSpaceStats", getSpaceStatsController);
