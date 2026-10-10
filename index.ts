@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 import connectDB from "./Config/db.js";
 import app from "./app.js";
 import { seedDefaultPlans } from "./Plans/Services/Plan.services.js";
+import { seedDefaultDocumentTemplates } from "./DocumentTemplates/Services/DocumentTemplate.services.js";
 import { connectReminderRedis } from "./Buddy/reminderSchedule/redisClient.js";
 import { startSseHealthLogger } from "./Buddy/Services/sseDiagnostics.js";
 import { isMeetingExtensionEnabled } from "./MeetingExtension/config.js";
@@ -18,6 +19,7 @@ const startServer = async () => {
   try {
     await connectDB();
     await seedDefaultPlans();
+    await seedDefaultDocumentTemplates();
     await connectReminderRedis();
     startSseHealthLogger();
     if (isMeetingExtensionEnabled()) {
