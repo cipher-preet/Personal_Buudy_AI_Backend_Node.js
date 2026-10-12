@@ -26,6 +26,8 @@ const startServer = async () => {
       startMeetingStaleScanner();
     }
     startGoogleCalendarSyncScheduler();
+    const { startGoalOutboxPublisher } = await import("./Goals/outbox.js");
+    startGoalOutboxPublisher();
     setInterval(() => {
       console.log(
         JSON.stringify({

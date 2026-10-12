@@ -1,31 +1,12 @@
 import { createHmac } from "crypto";
 
-import { Redis } from "ioredis";
-
-import { redactRedisSecrets } from "../Buddy/reminderSchedule/redisTarget.js";
+import { getSharedRedis } from "../Buddy/reminderSchedule/sharedRedis.js";
 import { getMeetingConfig } from "./config.js";
-import { logMeetingEvent } from "./log.js";
-
-let client: Redis | null = null;
 
 const getMeetingRedis = () => {
   const url = getMeetingConfig().redisUrl;
-  if (!url) {
-    return null;
-  }
-  if (!client) {
-    client = new Redis(url, {
-      maxRetriesPerRequest: 2,
-      enableReadyCheck: true,
-      lazyConnect: true,
-    });
-    client.on("error", (error: Error) => {
-      logMeetingEvent("meeting_redis_error", {
-        message: redactRedisSecrets(error.message),
-      });
-    });
-  }
-  return client;
+  if (!url) return null;
+  return getSharedRedis(url, "meeting");
 };
 
 const ensureConnected = async () => {
@@ -119,5 +100,5 @@ export const buildEnvelope = ({
 });
 
 export const __resetMeetingRedisForTests = () => {
-  client = null;
+  // Shared Redis registry is process-wide; tests should not force-close it here.
 };

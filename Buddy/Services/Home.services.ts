@@ -23,6 +23,27 @@ import {
   updateStagedTaskRepository,
   setStagedTaskStatusRepository,
 } from "../Repository/Home.repository.js";
+import { STATUS_CODE } from "../../Api/index.js";
+
+const notifyGoalSpaceActivity = async (
+  userId: string,
+  input: {
+    spaceId?: string;
+    sourceType: "task" | "note";
+    sourceId: string;
+    title: string;
+    status?: string;
+  },
+) => {
+  try {
+    const { recordSpaceItemForGoals } = await import("../../Goals/sourceEvents.js");
+    await recordSpaceItemForGoals(userId, input);
+  } catch (error) {
+    console.log("goal space evidence skipped", error);
+  }
+};
+
+const isOkStatus = (status: unknown) => status === STATUS_CODE.OK || status === STATUS_CODE.CREATED;
 
 export const createSpaceService = async (spacename: string, userId: string) => {
   try {
@@ -237,6 +258,15 @@ export const updateStagedNoteServices = async (
 ) => {
   try {
     const response = await updateStagedNoteRepository(userId, noteId, updates);
+    if (isOkStatus(response?.status)) {
+      const note = (response as { data?: { note?: { id?: string; title?: string } } }).data?.note;
+      await notifyGoalSpaceActivity(userId, {
+        sourceType: "note",
+        sourceId: String(note?.id || noteId),
+        title: String(note?.title || updates.title || "Note"),
+        status: "updated",
+      });
+    }
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
@@ -313,6 +343,12 @@ export const setStagedTaskStatusServices = async (
 ) => {
   try {
     const response = await setStagedTaskStatusRepository(userId, taskId, done);
+    if (response?.status === STATUS_CODE.OK) {
+      const { recordTaskStatusForGoals } = await import("../../Goals/sourceEvents.js");
+      await recordTaskStatusForGoals(userId, taskId, done).catch((error: unknown) => {
+        console.log("goal task evidence skipped", error);
+      });
+    }
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
@@ -337,6 +373,16 @@ export const createStagedNoteServices = async (
       body,
       dateKey,
     );
+    if (isOkStatus(response?.status)) {
+      const note = (response as { data?: { note?: { id?: string; title?: string } } }).data?.note;
+      await notifyGoalSpaceActivity(userId, {
+        spaceId,
+        sourceType: "note",
+        sourceId: String(note?.id || ""),
+        title: String(note?.title || title || "Note"),
+        status: "updated",
+      });
+    }
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
@@ -363,6 +409,16 @@ export const createStagedTaskServices = async (
       dateKey,
       priority,
     );
+    if (isOkStatus(response?.status)) {
+      const task = (response as { data?: { task?: { id?: string; title?: string } } }).data?.task;
+      await notifyGoalSpaceActivity(userId, {
+        spaceId,
+        sourceType: "task",
+        sourceId: String(task?.id || ""),
+        title: String(task?.title || title || "Task"),
+        status: "pending",
+      });
+    }
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);

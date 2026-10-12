@@ -1,12 +1,10 @@
-import { Redis } from "ioredis";
-
 import {
   describeReminderRedisUrl,
   formatReminderRedisTarget,
   redactRedisSecrets,
 } from "./redisTarget.js";
+import { getSharedRedis, reclaimStaleRedisClients } from "./sharedRedis.js";
 
-let client: Redis | null = null;
 let missingUrlLogged = false;
 
 export const getReminderRedisUrl = () =>
@@ -27,36 +25,19 @@ export const getReminderRedis = () => {
     return null;
   }
 
-  if (!client) {
-    let targetLabel = "host=unknown port=unknown tls=false";
-    try {
-      targetLabel = formatReminderRedisTarget(describeReminderRedisUrl(url));
-    } catch {
-      console.log(
-        JSON.stringify({
-          event: "reminder_redis_config_error",
-          message: "REMINDER_REDIS_URL is invalid",
-        }),
-      );
-      return null;
-    }
+  try {
+    const targetLabel = formatReminderRedisTarget(describeReminderRedisUrl(url));
     console.log(`Reminder Redis configured: ${targetLabel}`);
-    client = new Redis(url, {
-      maxRetriesPerRequest: 2,
-      enableReadyCheck: true,
-      lazyConnect: true,
-    });
-    client.on("error", (error: Error) => {
-      console.log(
-        JSON.stringify({
-          event: "reminder_redis_error",
-          message: redactRedisSecrets(error.message),
-        }),
-      );
-    });
+  } catch {
+    console.log(
+      JSON.stringify({
+        event: "reminder_redis_config_error",
+        message: "REMINDER_REDIS_URL is invalid",
+      }),
+    );
+    return null;
   }
-
-  return client;
+  return getSharedRedis(url, "reminder");
 };
 
 export const connectReminderRedis = async () => {
@@ -86,6 +67,7 @@ export const connectReminderRedis = async () => {
 
   try {
     await redis.ping();
+    await reclaimStaleRedisClients(redis);
     console.log(
       `Reminder Redis connected: host=${target.host} port=${target.port}`,
     );
