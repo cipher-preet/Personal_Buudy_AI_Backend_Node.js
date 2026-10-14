@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { STATUS_CODE } from "../../Api/index.js";
-import { validatePlanLimit, beginListeningUsage, endListeningUsage } from "../../Plans/Services/Plan.services.js";
+import { beginListeningUsage, endListeningUsage } from "../../Plans/Services/Plan.services.js";
 import { CreateSpace } from "../Modals/Home.Modal.js";
 import { StagedNotes, StagedTasks } from "../Modals/Staged.Modal.js";
 import { DEFAULT_REMINDER_TIMEZONE } from "../reminderSchedule/constants.js";
@@ -16,11 +16,7 @@ const createIdFilter = (id: string) => {
   };
 };
 
-const assertCanCreateInSpace = async (
-  userId: string,
-  spaceId: string,
-  resource: "notes" | "tasks",
-) => {
+const assertCanCreateInSpace = async (userId: string, spaceId: string) => {
   if (!mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(spaceId)) {
     return {
       ok: false as const,
@@ -30,23 +26,11 @@ const assertCanCreateInSpace = async (
     };
   }
 
-  const [quota, space] = await Promise.all([
-    validatePlanLimit(userId, resource),
-    CreateSpace.exists({
-      _id: spaceId,
-      userId: createIdFilter(userId),
-      deletedAt: null,
-    }),
-  ]);
-
-  if (!quota.allowed) {
-    return {
-      ok: false as const,
-      status: quota.status,
-      message: quota.message,
-      data: quota.data,
-    };
-  }
+  const space = await CreateSpace.exists({
+    _id: spaceId,
+    userId: createIdFilter(userId),
+    deletedAt: null,
+  });
 
   if (!space) {
     return {
@@ -269,16 +253,17 @@ const NOTE_PREVIEW_LENGTH = 140;
 
 const mapNoteListCard = (note: Record<string, any>) => {
   const conversationId = note.conversationId ?? note.sourceConversationId;
-  const body = typeof note.body === "string" ? note.body.trim() : "";
   const bodyPreview =
     typeof note.bodyPreview === "string" && note.bodyPreview
       ? note.bodyPreview
-      : body.slice(0, NOTE_PREVIEW_LENGTH);
+      : typeof note.body === "string"
+        ? note.body.trim().slice(0, NOTE_PREVIEW_LENGTH)
+        : "";
 
   return {
     id: String(note._id),
     title: note.title ?? "",
-    body,
+    // List endpoints return preview only; full body stays on get-by-id.
     bodyPreview,
     confidence: note.confidence ?? null,
     createdAt: note.createdAt ?? null,
@@ -294,8 +279,7 @@ const mapStagedNoteCard = (note: Record<string, any>) => {
   return {
     id: String(note._id),
     title: note.title ?? "",
-    body,
-    bodyPreview: body.slice(0, 140),
+    bodyPreview: body.slice(0, NOTE_PREVIEW_LENGTH),
     confidence: note.confidence ?? null,
     createdAt: note.createdAt ?? null,
     updatedAt: note.updatedAt ?? null,
@@ -331,16 +315,6 @@ export const createSpaceRepository = async (
   userId: string,
 ) => {
   try {
-    const quota = await validatePlanLimit(userId, "spaces");
-
-    if (!quota.allowed) {
-      return {
-        status: quota.status,
-        message: quota.message,
-        data: quota.data,
-      };
-    }
-
     const createSpace = await CreateSpace.create({
       spacename,
       userId,
@@ -926,11 +900,14 @@ export const getStagedNotesBySpaceRepository = async (
 
     const isFirstPage = !cursor;
 
-    // Backfill staged-only notes once per list load (first page), not per page.
-    await Promise.all([
-      ensureListIndexes(),
-      isFirstPage ? mirrorStagedNotesIntoMain(userId, spaceId) : undefined,
-    ]);
+    // Indexes must be ready before the list query; staged→main mirror is async
+    // so the first GET is not blocked by backfill.
+    await ensureListIndexes();
+    if (isFirstPage) {
+      void mirrorStagedNotesIntoMain(userId, spaceId).catch((error) => {
+        console.log("async mirrorStagedNotesIntoMain failed", error);
+      });
+    }
 
     const baseQuery: Record<string, any> = {
       userId: createIdFilter(userId),
@@ -968,7 +945,7 @@ export const getStagedNotesBySpaceRepository = async (
     const notesCollection = db.collection("notes");
 
     // Reads from main `notes` only to avoid staged+main duplicates.
-    // Full body is included so the home cards can render complete notes.
+    // List returns bodyPreview only; full body is loaded via get-by-id.
     // The total is only needed once per list, so later pages skip the count.
     const [pageDocs, total] = await Promise.all([
       notesCollection
@@ -979,7 +956,6 @@ export const getStagedNotesBySpaceRepository = async (
           {
             $project: {
               title: 1,
-              body: 1,
               confidence: 1,
               createdAt: 1,
               updatedAt: 1,
@@ -1048,7 +1024,9 @@ export const getNoteConversationsBySpaceRepository = async (
     }
 
     if (!cursor) {
-      await mirrorStagedNotesIntoMain(userId, spaceId);
+      void mirrorStagedNotesIntoMain(userId, spaceId).catch((error) => {
+        console.log("async mirrorStagedNotesIntoMain (conversations) failed", error);
+      });
     }
 
     const db = mongoose.connection;
@@ -1444,11 +1422,14 @@ export const getStagedTasksBySpaceRepository = async (
 
     const isFirstPage = !cursor;
 
-    // Backfill staged-only tasks once per list load (first page), not per page.
-    await Promise.all([
-      ensureListIndexes(),
-      isFirstPage ? mirrorStagedTasksIntoMain(userId, spaceId) : undefined,
-    ]);
+    // Indexes must be ready before the list query; staged→main mirror is async
+    // so the first GET is not blocked by backfill.
+    await ensureListIndexes();
+    if (isFirstPage) {
+      void mirrorStagedTasksIntoMain(userId, spaceId).catch((error) => {
+        console.log("async mirrorStagedTasksIntoMain failed", error);
+      });
+    }
 
     const baseQuery: Record<string, any> = {
       userId: createIdFilter(userId),
@@ -1867,7 +1848,7 @@ export const createStagedNoteRepository = async (
   dateKey?: string,
 ) => {
   try {
-    const access = await assertCanCreateInSpace(userId, spaceId, "notes");
+    const access = await assertCanCreateInSpace(userId, spaceId);
 
     if (!access.ok) {
       return {
@@ -1927,7 +1908,7 @@ export const createStagedTaskRepository = async (
   priority?: string,
 ) => {
   try {
-    const access = await assertCanCreateInSpace(userId, spaceId, "tasks");
+    const access = await assertCanCreateInSpace(userId, spaceId);
 
     if (!access.ok) {
       return {

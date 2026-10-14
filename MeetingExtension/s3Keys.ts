@@ -76,6 +76,20 @@ export const buildFinalRecordingS3Key = ({
   return `${prefix}/${sanitizeKeyPart(userId)}/${sanitizeKeyPart(meetingSessionId)}/meeting.mp4`;
 };
 
+export const buildThumbnailS3Key = ({
+  prefix,
+  userId,
+  meetingSessionId,
+}: {
+  prefix: string;
+  userId: string;
+  meetingSessionId: string;
+}) => {
+  assertSafeId(userId, "userId");
+  assertSafeId(meetingSessionId, "meetingSessionId");
+  return `${prefix}/${sanitizeKeyPart(userId)}/${sanitizeKeyPart(meetingSessionId)}/thumbnail.jpg`;
+};
+
 export const buildChunkId = (
   meetingSessionId: string,
   sequence: number,

@@ -12,6 +12,7 @@ import {
 } from "../Modals/goal.modal.js";
 import { enqueueGoalWork } from "../outbox.js";
 import { goalRepository, type GoalJobType } from "../Repository/Goal.repository.js";
+import { validatePlanLimit } from "../../Plans/Services/Plan.services.js";
 
 type GoalDoc = {
   _id: mongoose.Types.ObjectId;
@@ -175,6 +176,14 @@ const applyUnderstandingAnswer = (
 
 export const goalServices = {
   async create(ownerId: string, statement: string) {
+    const quota = await validatePlanLimit(ownerId, "goals");
+    if (!quota.allowed) {
+      throw Object.assign(new Error(quota.message || "Plan limit reached."), {
+        status: quota.status,
+        data: quota.data,
+      });
+    }
+
     const goal = await goalRepository.createGoal(ownerId, statement);
     if (!goal) {
       throw Object.assign(new Error("Invalid user."), { status: 400 });

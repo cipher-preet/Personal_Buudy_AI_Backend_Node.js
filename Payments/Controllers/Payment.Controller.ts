@@ -12,7 +12,7 @@ import {
 import { verifyWebhookSignature } from "../utils/razorpay.js";
 
 const parseBillingInterval = (value: unknown) =>
-  value === "quarterly" ? "quarterly" : "monthly";
+  value === "yearly" || value === "quarterly" ? "yearly" : "monthly";
 
 export const createPaymentOrderController = async (
   req: CustomRequest,

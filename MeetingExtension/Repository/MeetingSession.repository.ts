@@ -98,6 +98,7 @@ const LIST_PROJECTION = {
   intelligenceStatus: 1,
   videoMergeStatus: 1,
   finalRecordingS3Key: 1,
+  thumbnailS3Key: 1,
   mergeMissingSequences: 1,
   mergePresentChunkCount: 1,
   expectedFinalSequence: 1,

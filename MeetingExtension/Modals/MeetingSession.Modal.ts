@@ -61,6 +61,8 @@ const meetingSessionSchema = new mongoose.Schema(
       default: VideoMergeStatus.NOT_STARTED,
     },
     finalRecordingS3Key: { type: String, default: null },
+    /** JPEG frame extracted from a video chunk / merged recording for meeting cards. */
+    thumbnailS3Key: { type: String, default: null },
     mergeMissingSequences: { type: [Number], default: [] },
     /** A late chunk arrived while a merge was in flight — merge again once it finishes. */
     videoRemergeRequested: { type: Boolean, default: false },
@@ -74,6 +76,8 @@ const meetingSessionSchema = new mongoose.Schema(
     autoFinalizedAt: { type: Date, default: null },
     stopRequestedAt: { type: Date, default: null },
     finalizedAt: { type: Date, default: null },
+    /** When meeting duration was billed against the user plan quota. */
+    planUsageRecordedAt: { type: Date, default: null },
     clientRequestId: { type: String, default: null },
     pipelineStopEnqueued: { type: Boolean, default: false },
     lastErrorCode: { type: String, default: null },

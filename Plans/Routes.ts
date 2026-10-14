@@ -4,6 +4,7 @@ import {
   activateFreePlanController,
   getPlansController,
   getUserPlanStatusController,
+  reportListeningUsageController,
   validatePlanLimitController,
 } from "./Controllers/Plan.Controller.js";
 
@@ -13,5 +14,6 @@ router.get("/", getPlansController);
 router.get("/status", requireAuth, getUserPlanStatusController);
 router.post("/free", requireAuth, activateFreePlanController);
 router.post("/validate-limit", requireAuth, validatePlanLimitController);
+router.post("/report-listening", requireAuth, reportListeningUsageController);
 
 export default router;

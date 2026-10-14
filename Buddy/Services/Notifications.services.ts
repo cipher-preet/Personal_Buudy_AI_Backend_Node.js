@@ -25,17 +25,47 @@ export type NotificationItem = {
 export type NotificationFeed = {
   items: NotificationItem[];
   unreadCount: number;
+  nextCursor: string | null;
+  hasMore: boolean;
 };
 
 const WINDOW_DAYS = 30;
 const MAX_LIMIT = 50;
-const DEFAULT_LIMIT = 30;
-/** Raw rows scanned per collection; grouping folds them into far fewer notifications. */
-const SCAN_LIMIT = 200;
+const DEFAULT_LIMIT = 15;
+/** Cap on raw rows scanned per collection for one page. */
+const MAX_SCAN_PER_COLLECTION = 120;
 const MAX_READ_KEYS = 1000;
 /** One extraction run writes its tasks/notes within moments of each other. */
 const GROUP_WINDOW_MS = 10 * 60_000;
 const KEY_PATTERN = /^(task|note|meeting):[a-f0-9]{24}$/;
+/** Short TTL so the 30s badge poll does not rescan every time. */
+const UNREAD_COUNT_TTL_MS = 25_000;
+
+type UnreadCountCacheEntry = { value: number; expiresAt: number };
+const unreadCountCache = new Map<string, UnreadCountCacheEntry>();
+
+const getCachedUnreadCount = (userId: string) => {
+  const entry = unreadCountCache.get(userId);
+  if (!entry) {
+    return null;
+  }
+  if (entry.expiresAt <= Date.now()) {
+    unreadCountCache.delete(userId);
+    return null;
+  }
+  return entry.value;
+};
+
+const setCachedUnreadCount = (userId: string, value: number) => {
+  unreadCountCache.set(userId, {
+    value,
+    expiresAt: Date.now() + UNREAD_COUNT_TTL_MS,
+  });
+};
+
+export const invalidateUnreadCountCache = (userId: string) => {
+  unreadCountCache.delete(userId);
+};
 
 const notDeleted = { $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }] };
 
@@ -87,14 +117,64 @@ type RawItem = {
   createdAt: Date;
 };
 
-const loadRecent = async (userId: string, since: Date, limit: number): Promise<RawItem[]> => {
+type FeedCursor = {
+  createdAt: Date;
+  id: string;
+};
+
+export const encodeNotificationCursor = (createdAt: Date, id: string) =>
+  `${createdAt.toISOString()}|${id}`;
+
+export const decodeNotificationCursor = (value: unknown): FeedCursor | null => {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  const separator = value.indexOf("|");
+  if (separator <= 0) {
+    return null;
+  }
+  const createdAt = asDate(value.slice(0, separator));
+  const id = value.slice(separator + 1).trim();
+  if (!createdAt || !KEY_PATTERN.test(id)) {
+    return null;
+  }
+  return { createdAt, id };
+};
+
+const compareRawNewestFirst = (a: RawItem, b: RawItem) => {
+  const delta = b.createdAt.getTime() - a.createdAt.getTime();
+  if (delta !== 0) {
+    return delta;
+  }
+  return keyOf(a).localeCompare(keyOf(b));
+};
+
+/** True when `item` should appear after `cursor` in a newest-first feed (i.e. on later pages). */
+const isStrictlyOlderThanCursor = (createdAt: Date, id: string, cursor: FeedCursor) => {
+  const delta = createdAt.getTime() - cursor.createdAt.getTime();
+  if (delta < 0) {
+    return true;
+  }
+  if (delta > 0) {
+    return false;
+  }
+  return id.localeCompare(cursor.id) > 0;
+};
+
+const loadRecent = async (
+  userId: string,
+  since: Date,
+  limit: number,
+  before?: FeedCursor | null,
+): Promise<{ items: RawItem[]; capped: boolean }> => {
   const db = mongoose.connection.db;
   if (!db) {
-    return [];
+    return { items: [], capped: false };
   }
 
   const owner = ownerFilter(userId);
-  const createdFilter = { createdAt: { $gte: since } };
+  const createdUpper = before ? { $gte: since, $lte: before.createdAt } : { $gte: since };
+  const createdFilter = { createdAt: createdUpper };
   // Manual notes store the user-picked date as createdAt, so match them by insert time too.
   const itemFilter = {
     userId: owner,
@@ -103,7 +183,19 @@ const loadRecent = async (userId: string, since: Date, limit: number): Promise<R
       {
         $or: [
           createdFilter,
-          { source: "manual", _id: { $gte: mongoose.Types.ObjectId.createFromTime(Math.floor(since.getTime() / 1000)) } },
+          {
+            source: "manual",
+            _id: {
+              $gte: mongoose.Types.ObjectId.createFromTime(Math.floor(since.getTime() / 1000)),
+              ...(before
+                ? {
+                    $lte: mongoose.Types.ObjectId.createFromTime(
+                      Math.floor(before.createdAt.getTime() / 1000) + 1,
+                    ),
+                  }
+                : {}),
+            },
+          },
         ],
       },
     ],
@@ -135,9 +227,14 @@ const loadRecent = async (userId: string, since: Date, limit: number): Promise<R
     createdAt: insertedAt(doc),
   });
 
-  return [...tasks.map(toRaw("task")), ...notes.map(toRaw("note")), ...meetings.map(toRaw("meeting"))]
+  const items = [...tasks.map(toRaw("task")), ...notes.map(toRaw("note")), ...meetings.map(toRaw("meeting"))]
     .filter((item) => item.createdAt >= since)
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    .sort(compareRawNewestFirst);
+
+  return {
+    items,
+    capped: tasks.length >= limit || notes.length >= limit || meetings.length >= limit,
+  };
 };
 
 const keyOf = (item: RawItem) => `${item.type}:${String(item.doc._id)}`;
@@ -215,22 +312,14 @@ const describe = (group: RawGroup, fromMeeting: boolean) => {
   };
 };
 
-export const getNotificationFeed = async (
+const scanLimitForPage = (pageSize: number) =>
+  Math.min(MAX_SCAN_PER_COLLECTION, Math.max(pageSize * 5, 40));
+
+const buildFeedItems = async (
   userId: string,
-  options: { unreadOnly?: boolean; limit?: number } = {},
-): Promise<NotificationFeed> => {
-  const limit = Math.min(Math.max(Number(options.limit) || DEFAULT_LIMIT, 1), MAX_LIMIT);
-  const state = await getOrCreateState(userId);
-  const windowStart = new Date(Date.now() - WINDOW_DAYS * 86_400_000);
-
-  const isUnreadItem = (item: RawItem) =>
-    item.createdAt > state.lastReadAllAt && !state.readKeys.has(keyOf(item));
-
-  const groups = groupItems(await loadRecent(userId, windowStart, SCAN_LIMIT));
-  // A group is unread while any of its items is.
-  const unreadGroups = groups.filter((group) => group.members.some(isUnreadItem));
-  const selected = (options.unreadOnly ? unreadGroups : groups).slice(0, limit);
-
+  selected: RawGroup[],
+  isUnreadItem: (item: RawItem) => boolean,
+): Promise<NotificationItem[]> => {
   const db = mongoose.connection.db;
   const spaceIds = [
     ...new Set(selected.map((group) => group.lead.doc.spaceId).filter(Boolean).map(String)),
@@ -265,7 +354,7 @@ export const getNotificationFeed = async (
   const spaceNames = new Map(spaces.map((space) => [String(space._id), asText(space.spacename) || "Untitled space"]));
   const meetingIds = new Set(meetingSessions.map((session) => String(session._id)));
 
-  const items = selected.map((group): NotificationItem => {
+  return selected.map((group): NotificationItem => {
     const { lead, members } = group;
     const entityId = String(lead.doc._id);
     const rawSpaceId = lead.doc.spaceId ? String(lead.doc.spaceId) : null;
@@ -289,14 +378,74 @@ export const getNotificationFeed = async (
       read: !members.some(isUnreadItem),
     };
   });
+};
 
-  return { items, unreadCount: unreadGroups.length };
+export const getUnreadNotificationCount = async (userId: string): Promise<{ unreadCount: number }> => {
+  const cached = getCachedUnreadCount(userId);
+  if (cached !== null) {
+    return { unreadCount: cached };
+  }
+
+  const state = await getOrCreateState(userId);
+  const windowStart = new Date(Date.now() - WINDOW_DAYS * 86_400_000);
+  const isUnreadItem = (item: RawItem) =>
+    item.createdAt > state.lastReadAllAt && !state.readKeys.has(keyOf(item));
+
+  // Badge only needs a count; scan a bounded recent window and skip space hydration.
+  const { items: recent } = await loadRecent(userId, windowStart, MAX_SCAN_PER_COLLECTION);
+  const groups = groupItems(recent);
+  const unreadCount = groups.filter((group) => group.members.some(isUnreadItem)).length;
+  setCachedUnreadCount(userId, unreadCount);
+  return { unreadCount };
+};
+
+export const getNotificationFeed = async (
+  userId: string,
+  options: { unreadOnly?: boolean; limit?: number; cursor?: string | null } = {},
+): Promise<NotificationFeed> => {
+  const limit = Math.min(Math.max(Number(options.limit) || DEFAULT_LIMIT, 1), MAX_LIMIT);
+  const cursor = decodeNotificationCursor(options.cursor);
+  const state = await getOrCreateState(userId);
+  const windowStart = new Date(Date.now() - WINDOW_DAYS * 86_400_000);
+
+  const isUnreadItem = (item: RawItem) =>
+    item.createdAt > state.lastReadAllAt && !state.readKeys.has(keyOf(item));
+
+  // First page scans a wider recent window so unreadCount stays accurate; later pages
+  // only fetch rows at/before the cursor with a smaller bound.
+  const scanLimit = cursor ? scanLimitForPage(limit) : MAX_SCAN_PER_COLLECTION;
+  const { items: recent, capped } = await loadRecent(userId, windowStart, scanLimit, cursor);
+  const groups = groupItems(recent);
+
+  const afterCursor = cursor
+    ? groups.filter((group) => isStrictlyOlderThanCursor(group.lead.createdAt, keyOf(group.lead), cursor))
+    : groups;
+
+  const unreadInScan = groups.filter((group) => group.members.some(isUnreadItem)).length;
+  const candidate = options.unreadOnly
+    ? afterCursor.filter((group) => group.members.some(isUnreadItem))
+    : afterCursor;
+  const pageGroups = candidate.slice(0, limit);
+  const hasMore = candidate.length > limit || (pageGroups.length === limit && capped);
+  const last = pageGroups[pageGroups.length - 1];
+  const nextCursor =
+    hasMore && last ? encodeNotificationCursor(last.lead.createdAt, keyOf(last.lead)) : null;
+
+  const items = await buildFeedItems(userId, pageGroups, isUnreadItem);
+
+  return {
+    items,
+    // Later pages omit a fresh total; the client keeps unreadCount from page 1 / badge poll.
+    unreadCount: cursor ? 0 : unreadInScan,
+    nextCursor,
+    hasMore,
+  };
 };
 
 export const markNotificationsRead = async (userId: string, ids: unknown) => {
   const keys = (Array.isArray(ids) ? ids : [])
     .filter((id): id is string => typeof id === "string" && KEY_PATTERN.test(id))
-    .slice(0, SCAN_LIMIT);
+    .slice(0, MAX_SCAN_PER_COLLECTION);
 
   if (keys.length === 0) {
     return;
@@ -307,6 +456,7 @@ export const markNotificationsRead = async (userId: string, ids: unknown) => {
     { userId },
     { $push: { readKeys: { $each: keys, $slice: -MAX_READ_KEYS } } },
   );
+  invalidateUnreadCountCache(userId);
 };
 
 export const markAllNotificationsRead = async (userId: string) => {
@@ -315,4 +465,5 @@ export const markAllNotificationsRead = async (userId: string) => {
     { $set: { lastReadAllAt: new Date(), readKeys: [] } },
     { upsert: true },
   );
+  invalidateUnreadCountCache(userId);
 };

@@ -103,11 +103,13 @@ export const markChunkUploadedOnce = async ({
   endOffsetMs,
   durationMs,
   jobId,
+  checksum,
 }: {
   meetingSessionId: mongoose.Types.ObjectId;
   sequence: number;
   mediaKind: MeetingMediaKind;
   etag?: string | null;
+  checksum?: string | null;
   sizeBytes: number;
   startOffsetMs: number;
   endOffsetMs: number;
@@ -129,6 +131,7 @@ export const markChunkUploadedOnce = async ({
         transcriptionStatus: mediaKind === "video" ? "COMPLETED" : "PENDING",
         processingEnqueued: true,
         etag: etag ?? null,
+        ...(checksum ? { checksum } : {}),
         sizeBytes,
         startOffsetMs,
         endOffsetMs,

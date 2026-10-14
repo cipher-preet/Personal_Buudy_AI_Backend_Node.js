@@ -12,11 +12,19 @@ const sendError = (res: Response, error: unknown) => {
       ? error.status
       : STATUS_CODE.INTERNAL_SERVER_ERROR;
   const message = error instanceof Error ? error.message : "Something went wrong. Please try again.";
+  const data =
+    typeof error === "object" &&
+    error &&
+    "data" in error &&
+    typeof (error as { data?: unknown }).data === "object" &&
+    (error as { data?: unknown }).data !== null
+      ? ((error as { data: object }).data)
+      : undefined;
   if (status >= 500) {
     console.error("Goal API error", message);
     return ErrorResponse(res, STATUS_CODE.INTERNAL_SERVER_ERROR, "Something went wrong. Please try again.");
   }
-  return ErrorResponse(res, status, message);
+  return ErrorResponse(res, status, message, data);
 };
 
 export const createGoalController = async (req: CustomRequest, res: Response, _next: NextFunction) => {

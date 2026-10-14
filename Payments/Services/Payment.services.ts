@@ -47,7 +47,7 @@ const makeReceipt = (userId: string, planCode: string, interval: string) =>
 export const createPaymentOrderService = async (
   userId: string,
   planCode: PlanCode,
-  interval: Extract<PlanInterval, "monthly" | "quarterly"> = "monthly",
+  interval: Extract<PlanInterval, "monthly" | "yearly"> = "monthly",
 ) => {
   if (!mongoose.isValidObjectId(userId)) {
     return {
@@ -163,7 +163,7 @@ export const createPaymentLinkService = async ({
   name?: string;
   email?: string;
   phone?: string;
-  interval?: Extract<PlanInterval, "monthly" | "quarterly">;
+  interval?: Extract<PlanInterval, "monthly" | "yearly">;
 }) => {
   if (!mongoose.isValidObjectId(userId)) {
     return {

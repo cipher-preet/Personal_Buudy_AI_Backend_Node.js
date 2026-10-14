@@ -689,7 +689,7 @@ export const updateAdminPlanController = async (
       "name",
       "description",
       "amount",
-      "quarterlyAmount",
+      "yearlyAmount",
       "currency",
       "limits",
       "languages",

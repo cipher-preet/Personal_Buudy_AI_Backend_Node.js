@@ -70,7 +70,6 @@ const createSpaceController = async (
         res,
         response.status,
         response.message || "Unable to create space.",
-        response.data,
       );
     }
 

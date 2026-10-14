@@ -169,7 +169,11 @@ export const createPresignedGetUrl = async ({
         ? "video/webm"
         : key.toLowerCase().endsWith(".wav")
           ? "audio/wav"
-          : undefined);
+          : key.toLowerCase().endsWith(".jpg") || key.toLowerCase().endsWith(".jpeg")
+            ? "image/jpeg"
+            : key.toLowerCase().endsWith(".png")
+              ? "image/png"
+              : undefined);
 
   const command = new GetObjectCommand({
     Bucket: bucket,

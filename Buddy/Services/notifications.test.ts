@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import mongoose from "mongoose";
-import { groupItems, insertedAt } from "./Notifications.services.js";
+import {
+  decodeNotificationCursor,
+  encodeNotificationCursor,
+  groupItems,
+  insertedAt,
+} from "./Notifications.services.js";
 
 const at = (iso: string) => new Date(iso);
 
@@ -48,4 +53,20 @@ test("groupItems folds same-type items from one conversation created together", 
     groups.map((group) => group.members.map((member) => member.doc._id)),
     [["n1", "n2"], ["t1"], ["m1"], ["n3"]],
   );
+});
+
+test("notification cursor round-trips createdAt and id", () => {
+  const id = "task:507f1f77bcf86cd799439011";
+  const createdAt = new Date("2026-10-02T10:00:00.000Z");
+  const encoded = encodeNotificationCursor(createdAt, id);
+  const decoded = decodeNotificationCursor(encoded);
+  assert.ok(decoded);
+  assert.equal(decoded.createdAt.toISOString(), createdAt.toISOString());
+  assert.equal(decoded.id, id);
+});
+
+test("decodeNotificationCursor rejects invalid values", () => {
+  assert.equal(decodeNotificationCursor(""), null);
+  assert.equal(decodeNotificationCursor("not-a-cursor"), null);
+  assert.equal(decodeNotificationCursor("2026-10-02T10:00:00.000Z|task:bad"), null);
 });

@@ -58,7 +58,10 @@ const blendActual = (
   return Math.round(Math.min(100, Math.max(0, score)));
 };
 
-const loadLinkedSpaceStats = async (goalId: unknown, ownerId: unknown) => {
+const loadLinkedSpaceStats = async (
+  goalId: mongoose.Types.ObjectId,
+  ownerId: mongoose.Types.ObjectId,
+) => {
   const links = await GoalSpaceLink.find({ goalId }).select({ spaceId: 1 }).lean();
   const spaceIds = links.map((link) => link.spaceId).filter(Boolean);
   if (!spaceIds.length) {

@@ -87,6 +87,7 @@ export const parseProvider = (value: unknown) => {
     provider === MeetingProvider.GOOGLE_MEET ||
     provider === MeetingProvider.ZOOM ||
     provider === MeetingProvider.MICROSOFT_TEAMS ||
+    provider === MeetingProvider.ZOHO_MEETING ||
     provider === MeetingProvider.UNKNOWN
   ) {
     return provider;

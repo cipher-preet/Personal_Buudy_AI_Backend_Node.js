@@ -49,6 +49,7 @@ describe("meeting validation", () => {
 
   it("parses known providers", () => {
     assert.equal(parseProvider("google_meet"), "GOOGLE_MEET");
+    assert.equal(parseProvider("zoho_meeting"), "ZOHO_MEETING");
     assert.equal(parseProvider(undefined), "UNKNOWN");
   });
 

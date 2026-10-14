@@ -4,8 +4,11 @@ import type { CustomRequest } from "../../types/types.js";
 import {
   getPlansService,
   getUserPlanStatusService,
+  PLAN_RESOURCES,
+  reportListeningUsage,
   switchToFreePlanService,
   validatePlanLimit,
+  type PlanResource,
 } from "../Services/Plan.services.js";
 
 export const getPlansController = async (
@@ -90,7 +93,7 @@ export const validatePlanLimitController = async (
 
     if (
       !userId ||
-      !["spaces", "notes", "tasks", "recordingHours"].includes(String(resource))
+      !PLAN_RESOURCES.includes(String(resource) as PlanResource)
     ) {
       return ErrorResponse(
         res,
@@ -105,7 +108,7 @@ export const validatePlanLimitController = async (
 
     const response = await validatePlanLimit(
       String(userId),
-      resource as "spaces" | "notes" | "tasks" | "recordingHours",
+      resource as PlanResource,
       Number(nextCount) || 1,
     );
 
@@ -116,6 +119,39 @@ export const validatePlanLimitController = async (
         response.message || "Plan limit reached.",
         response.data,
       );
+    }
+
+    return SuccessResponse(res, response.status, response.data || {});
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const reportListeningUsageController = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { userId } = req.body;
+    const authUserId = req.authUser?.id || req.session?.user?.id;
+
+    if (!userId) {
+      return ErrorResponse(res, STATUS_CODE.BAD_REQUEST, "User id is required.");
+    }
+
+    if (!authUserId || String(authUserId) !== String(userId)) {
+      return ErrorResponse(res, STATUS_CODE.UNAUTHORIZED, "Unauthorized");
+    }
+
+    const response = await reportListeningUsage(String(userId));
+
+    if (!response.allowed) {
+      const message =
+        "message" in response && typeof response.message === "string"
+          ? response.message
+          : "Notes recording time limit reached.";
+      return ErrorResponse(res, response.status, message, response.data);
     }
 
     return SuccessResponse(res, response.status, response.data || {});

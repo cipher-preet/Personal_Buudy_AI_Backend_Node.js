@@ -45,6 +45,7 @@ import {
   markChunkUploadedOnce,
   upsertPresignedChunk,
 } from "../Repository/MeetingChunk.repository.js";
+import { MeetingSession } from "../Modals/MeetingSession.Modal.js";
 import {
   createMeetingSession,
   deleteMeetingSessionForUser,
@@ -63,6 +64,7 @@ import {
   buildMeetingChunkS3Key,
   sanitizeKeyPart,
 } from "../s3Keys.js";
+import { parseOptionalChecksum, presignReuseDecision } from "../checksum.js";
 import { canAcceptUploads, isLateRecordedChunk, missingSequences, toClientStatus } from "../state.js";
 import { flattenTranscriptSegments } from "../transcript.js";
 import {
@@ -79,6 +81,10 @@ import {
   parseSequence,
   parseSizeBytes,
 } from "../validation.js";
+import {
+  addMeetingRecordingUsage,
+  validatePlanLimit,
+} from "../../Plans/Services/Plan.services.js";
 
 /** Extension meetings are unscoped; never serialize null as the string "null". */
 const spaceIdForEvent = (spaceId: unknown): string =>
@@ -258,6 +264,38 @@ export class MeetingRecordingService {
     private readonly queue: QueuePort = defaultQueue,
   ) {}
 
+  /** Atomically claim billing once so stop + auto-finalize cannot double-charge. */
+  private async claimAndBillMeetingUsage(
+    meeting: mongoose.Document & Record<string, any>,
+    ownerId: string,
+    billableMs: number,
+  ) {
+    if (!(billableMs > 0)) {
+      return;
+    }
+
+    const claimed = await MeetingSession.findOneAndUpdate(
+      { _id: meeting._id, planUsageRecordedAt: null },
+      { $set: { planUsageRecordedAt: new Date() } },
+      { new: true },
+    );
+
+    if (!claimed) {
+      return;
+    }
+
+    try {
+      await addMeetingRecordingUsage(ownerId, billableMs);
+      meeting.planUsageRecordedAt = claimed.planUsageRecordedAt;
+    } catch (error) {
+      await MeetingSession.updateOne(
+        { _id: meeting._id },
+        { $unset: { planUsageRecordedAt: 1 } },
+      );
+      throw error;
+    }
+  }
+
   async create(userId: string | undefined, body: Record<string, unknown>) {
     const ownerId = requireUserId(userId);
     const config = getMeetingConfig();
@@ -272,6 +310,27 @@ export class MeetingRecordingService {
         MeetingErrorCode.MEETING_RATE_LIMITED,
         "Too many meeting create requests.",
         429,
+      );
+    }
+
+    const quota = await validatePlanLimit(ownerId, "meetingRecordingHours", 0);
+    const remainingMs =
+      quota.data && "remainingMs" in quota.data
+        ? Number((quota.data as { remainingMs?: number }).remainingMs)
+        : 0;
+    if (
+      !quota.allowed ||
+      (Number.isFinite(remainingMs) && remainingMs !== -1 && remainingMs <= 0)
+    ) {
+      throw new MeetingError(
+        MeetingErrorCode.MEETING_PLAN_LIMIT,
+        quota.message ||
+          "Meeting recording time limit reached. Upgrade your plan to continue.",
+        403,
+        {
+          ...(quota.data as Record<string, unknown> | undefined),
+          reason: "quota_exhausted",
+        },
       );
     }
 
@@ -383,10 +442,61 @@ export class MeetingRecordingService {
       );
     }
 
+    // Mid-session gate: reject new chunks once meeting quota (or plan period) is exhausted.
+    if (!meeting.planUsageRecordedAt) {
+      const quota = await validatePlanLimit(ownerId, "meetingRecordingHours", 0);
+      const remainingMs =
+        quota.data && "remainingMs" in quota.data
+          ? Number((quota.data as { remainingMs?: number }).remainingMs)
+          : 0;
+      if (
+        !quota.allowed ||
+        (Number.isFinite(remainingMs) && remainingMs !== -1 && remainingMs <= 0)
+      ) {
+        throw new MeetingError(
+          MeetingErrorCode.MEETING_PLAN_LIMIT,
+          quota.message ||
+            "Meeting recording time limit reached. Stop and upgrade your plan to continue.",
+          403,
+          {
+            ...(quota.data as Record<string, unknown> | undefined),
+            reason: "quota_exhausted",
+            forceStop: true,
+          },
+        );
+      }
+    }
+
     this.assertSequenceAllowed(meeting, sequence);
 
     const mimeType = assertAllowedMimeType(body.mimeType || meeting.recordingMimeType);
     const mediaKind = parseMediaKind(body.mediaKind, mimeType);
+    const incomingChecksum = parseOptionalChecksum(body.checksum);
+    const existingChunk = await findChunk(meeting._id, sequence, mediaKind);
+    const reuse = presignReuseDecision(
+      existingChunk?.uploadStatus ?? null,
+      typeof existingChunk?.checksum === "string" ? existingChunk.checksum : null,
+      incomingChecksum,
+    );
+    if (reuse !== "upload" && existingChunk?.s3Key) {
+      if (reuse === "ack-conflict") {
+        logMeetingEvent("meeting_chunk_checksum_conflict", {
+          meetingSessionId: String(meeting._id),
+          userId: ownerId,
+          chunkSequence: sequence,
+        });
+      }
+      return {
+        uploadUrl: "",
+        s3Key: existingChunk.s3Key,
+        mediaKind,
+        expiresAt: new Date().toISOString(),
+        method: "PUT",
+        headers: {},
+        alreadyUploaded: true,
+        checksumConflict: reuse === "ack-conflict",
+      };
+    }
     const timing = parseChunkTiming(body, config);
     const sizeBytes = parseSizeBytes(body.sizeBytes, config);
     const s3Key = buildMeetingChunkS3Key({
@@ -633,11 +743,13 @@ export class MeetingRecordingService {
       });
     }
 
+    const incomingChecksum = parseOptionalChecksum(body.checksum);
     const claimed = await markChunkUploadedOnce({
       meetingSessionId: meeting._id,
       sequence,
       mediaKind,
       etag: typeof body.etag === "string" ? body.etag : head.etag,
+      checksum: incomingChecksum,
       sizeBytes: head.sizeBytes,
       startOffsetMs: timing.startOffsetMs,
       endOffsetMs: timing.endOffsetMs,
@@ -741,6 +853,12 @@ export class MeetingRecordingService {
       meeting.status = MeetingStatus.STOP_REQUESTED;
     }
 
+    const billableMs =
+      typeof meeting.durationMs === "number" && Number.isFinite(meeting.durationMs)
+        ? Math.max(0, meeting.durationMs)
+        : 0;
+    await this.claimAndBillMeetingUsage(meeting, ownerId, billableMs);
+
     logMeetingEvent("meeting_stop_requested", {
       meetingSessionId: String(meeting._id),
       userId: ownerId,
@@ -774,9 +892,15 @@ export class MeetingRecordingService {
       cursor,
       spaceId: spaceIdFilter,
     });
+    const config = getMeetingConfig();
+    const items = await Promise.all(
+      page.items.map((item: Record<string, any>) =>
+        this.withThumbnailUrl(this.toDetail(item), config.playbackTtlSeconds),
+      ),
+    );
 
     return {
-      items: page.items.map((item: Record<string, any>) => this.toDetail(item)),
+      items,
       nextCursor: page.nextCursor,
       spaceId: spaceIdFilter || null,
     };
@@ -795,8 +919,12 @@ export class MeetingRecordingService {
         // Detail view should still return; playback will retry.
       }
     }
+    const detail = await this.withThumbnailUrl(
+      this.toDetail(meeting.toObject()),
+      getMeetingConfig().playbackTtlSeconds,
+    );
     return {
-      ...this.toDetail(meeting.toObject()),
+      ...detail,
       artifacts,
       conversationStatus: conversation?.status || null,
     };
@@ -1231,6 +1359,16 @@ export class MeetingRecordingService {
     meeting.durationMs = meeting.durationMs ?? (plan.recordedMs || null);
     meeting.autoFinalizedAt = new Date();
     meeting.status = MeetingStatus.STOP_REQUESTED;
+
+    const billableMs =
+      typeof meeting.durationMs === "number" && Number.isFinite(meeting.durationMs)
+        ? Math.max(0, meeting.durationMs)
+        : 0;
+    await this.claimAndBillMeetingUsage(
+      meeting,
+      String(meeting.userId),
+      billableMs,
+    );
 
     logMeetingEvent("meeting_auto_finalized", {
       meetingSessionId: String(meeting._id),
@@ -1751,11 +1889,38 @@ export class MeetingRecordingService {
         : 0,
       mergePresentChunkCount: meeting.mergePresentChunkCount ?? null,
       finalRecordingS3Key: meeting.finalRecordingS3Key || null,
+      thumbnailS3Key: meeting.thumbnailS3Key || null,
+      thumbnailUrl: null as string | null,
       extensionVersion: meeting.extensionVersion,
       createdAt: meeting.createdAt,
       updatedAt: meeting.updatedAt,
       ...client,
     };
+  }
+
+  /** Sign thumbnail URLs in parallel for list cards; never fail the meeting payload. */
+  private async withThumbnailUrl<T extends { thumbnailS3Key?: string | null; thumbnailUrl?: string | null }>(
+    detail: T,
+    expiresInSeconds: number,
+  ): Promise<T & { thumbnailUrl: string | null }> {
+    const key = typeof detail.thumbnailS3Key === "string" ? detail.thumbnailS3Key.trim() : "";
+    if (!key) {
+      return { ...detail, thumbnailUrl: null };
+    }
+    try {
+      const signed = await this.s3.presignGet({
+        key,
+        expiresInSeconds,
+        responseContentType: "image/jpeg",
+      });
+      return { ...detail, thumbnailUrl: signed.url };
+    } catch (error) {
+      logMeetingEvent("meeting_thumbnail_presign_failed", {
+        meetingSessionId: (detail as { meetingSessionId?: string }).meetingSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { ...detail, thumbnailUrl: null };
+    }
   }
 }
 
