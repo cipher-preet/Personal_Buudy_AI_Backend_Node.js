@@ -16,9 +16,8 @@ const TIMELINE_PAD_HOURS = 2;
 const TONES = ["indigo", "violet", "cyan", "teal"] as const;
 
 const EVENT_FIELDS =
-  "title description location dateKey dateLabel startTimeLabel endTimeLabel tone aiReminder aiCalling notification beeping remindBeforeMinutes reminderId source externalUrl allDay createdAt updatedAt";
-const REMINDER_FIELDS =
-  "title description dateKey dateLabel timeLabel source tone repeat aiCalling notification beeping createdAt updatedAt";
+  "title description location dateKey startTimeLabel endTimeLabel tone aiReminder remindBeforeMinutes reminderId source externalUrl allDay";
+const REMINDER_FIELDS = "title description dateKey timeLabel tone";
 const TASK_FIELDS =
   "title description body status priority dueDate spaceId createdAt updatedAt";
 const NOTE_FIELDS = "title body spaceId createdAt updatedAt";
@@ -393,10 +392,17 @@ const rangeBoundsUtc = (from: string, to: string, timeZone: string) => {
   return { start, endExclusive };
 };
 
+const toCardFeedItem = (item: CalendarFeedItem) => {
+  const { tone: _tone, aiReminder: _aiReminder, remindBeforeMinutes: _remindBefore, reminderId: _reminderId, ...card } =
+    item;
+  return card;
+};
+
 export const getCalendarFeedRepository = async (
   userId: string,
   fromDate: string,
   toDate: string,
+  card = false,
 ) => {
   try {
     if (!userId?.trim()) {
@@ -608,29 +614,30 @@ export const getCalendarFeedRepository = async (
         .filter((id): id is string => Boolean(id)),
     );
 
+    const feed = {
+      from: fromDate,
+      to: toDate,
+      items: card ? items.map(toCardFeedItem) : items,
+      spaces: spaces
+        .filter((space) => usedSpaceIds.has(String(space._id)))
+        .map((space) => ({
+          id: String(space._id),
+          name: space.spacename || "Space",
+        })),
+      summaryByDate: buildSummaryByDate(items),
+      windows: buildDayWindows(items),
+      counts: {
+        meetings: items.filter((item) => item.kind === "meeting").length,
+        tasks: items.filter((item) => item.kind === "task").length,
+        notes: items.filter((item) => item.kind === "note").length,
+        reminders: items.filter((item) => item.kind === "reminder").length,
+        total: items.length,
+      },
+    };
+
     return {
       status: STATUS_CODE.OK,
-      data: {
-        from: fromDate,
-        to: toDate,
-        userId: ownerId,
-        items,
-        spaces: spaces
-          .filter((space) => usedSpaceIds.has(String(space._id)))
-          .map((space) => ({
-            id: String(space._id),
-            name: space.spacename || "Space",
-          })),
-        summaryByDate: buildSummaryByDate(items),
-        windows: buildDayWindows(items),
-        counts: {
-          meetings: items.filter((item) => item.kind === "meeting").length,
-          tasks: items.filter((item) => item.kind === "task").length,
-          notes: items.filter((item) => item.kind === "note").length,
-          reminders: items.filter((item) => item.kind === "reminder").length,
-          total: items.length,
-        },
-      },
+      data: card ? feed : { ...feed, userId: ownerId },
     };
   } catch (error) {
     console.log("error in CalendarFeed repository Layer ", error);

@@ -898,11 +898,12 @@ export class MeetingRecordingService {
         this.withThumbnailUrl(this.toDetail(item), config.playbackTtlSeconds),
       ),
     );
+    const card = query.view === "card";
 
     return {
-      items,
+      items: card ? items.map((item) => this.toListCard(item)) : items,
       nextCursor: page.nextCursor,
-      spaceId: spaceIdFilter || null,
+      ...(card ? {} : { spaceId: spaceIdFilter || null }),
     };
   }
 
@@ -1853,6 +1854,38 @@ export class MeetingRecordingService {
       missingSequences: missingAudio,
       missingAudioSequences: missingAudio,
       missingVideoSequences: missingVideo,
+    };
+  }
+
+  private toListCard(meeting: {
+    meetingSessionId: string;
+    spaceId: string | null;
+    provider: string;
+    meetingTitle: string | null;
+    startedAt?: Date | string | null;
+    endedAt?: Date | string | null;
+    durationMs?: number | null;
+    recordingAvailable: boolean;
+    recordingPartial: boolean;
+    thumbnailUrl?: string | null;
+    createdAt?: Date | string | null;
+    recordingStatus?: string;
+    ready?: boolean;
+  }) {
+    return {
+      meetingSessionId: meeting.meetingSessionId,
+      spaceId: meeting.spaceId,
+      provider: meeting.provider,
+      meetingTitle: meeting.meetingTitle,
+      startedAt: meeting.startedAt,
+      endedAt: meeting.endedAt,
+      durationMs: meeting.durationMs,
+      recordingAvailable: meeting.recordingAvailable,
+      recordingPartial: meeting.recordingPartial,
+      thumbnailUrl: meeting.thumbnailUrl ?? null,
+      createdAt: meeting.createdAt,
+      recordingStatus: meeting.recordingStatus,
+      ready: meeting.ready,
     };
   }
 

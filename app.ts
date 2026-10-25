@@ -16,6 +16,7 @@ import meetingRecordingRoutes from "./MeetingExtension/Routes.js";
 import integrationRoutes from "./Buddy/IntegrationRoutes.js";
 import notificationRoutes from "./Buddy/NotificationRoutes.js";
 import goalRoutes from "./Goals/Routes.js";
+import contactRoutes from "./Contact/Routes.js";
 import { razorpayWebhookController } from "./Payments/Controllers/Payment.Controller.js";
 
 // Set the DNS server to use for resolving hostnames
@@ -72,6 +73,7 @@ app.use("/api/v1/meeting-recordings", meetingRecordingRoutes);
 app.use("/api/v1/integrations", integrationRoutes);
 app.use("/api/v1/notifications", notificationRoutes);
 app.use("/api/v1/goals", goalRoutes);
+app.use("/api/v1/contact", contactRoutes);
 
 app.get("/", (req, res) => {
   res.send("server is running");

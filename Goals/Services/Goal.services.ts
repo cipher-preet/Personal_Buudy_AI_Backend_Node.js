@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 import { publishGoalJob } from "../queue.js";
 import { readGoalDashboard, rebuildGoalDashboard } from "../dashboard.js";
+import { mutatePlan, type WorkspaceActionInput } from "../workspace.js";
 import {
   GoalCheckin,
   GoalEvidence,
@@ -485,7 +486,18 @@ export const goalServices = {
             break;
           }
         }
-        if (matched) break;
+        if (matched) {
+          const tasks = Array.isArray(day.tasks) ? (day.tasks as Array<Record<string, unknown>>) : [];
+          const allDone = tasks.length > 0 && tasks.every((task) => Boolean(task.done));
+          if (allDone) {
+            day.status = "done";
+            day.completedOn = new Date().toLocaleDateString("en-CA", { timeZone: goal.timezone || "Asia/Kolkata" });
+          } else if (String(day.status || "") === "done") {
+            day.status = "reopened";
+            day.completedOn = "";
+          }
+          break;
+        }
       }
       plan.days = days;
     } else {
@@ -556,6 +568,44 @@ export const goalServices = {
     await goal.save();
     const job = await enqueue(goal, ownerId, "research", { forceRefresh: true, preserveProgress: true });
     return { goal: serializeGoal(goal.toObject()), job: serializeJob(job) };
+  },
+
+  async workspaceAction(ownerId: string, goalId: string, input: WorkspaceActionInput) {
+    const goal = await goalRepository.findOwned(goalId, ownerId);
+    if (!goal) return null;
+    if (!["ACTIVE", "PAUSED", "COMPLETED", "PLAN_REVIEW"].includes(String(goal.status))) {
+      throw Object.assign(new Error("Approve the plan before updating steps."), { status: 400 });
+    }
+    const source =
+      goal.approvedPlan && typeof goal.approvedPlan === "object"
+        ? goal.approvedPlan
+        : goal.proposedPlan && typeof goal.proposedPlan === "object"
+          ? goal.proposedPlan
+          : null;
+    if (!source) {
+      throw Object.assign(new Error("No plan is available to update."), { status: 400 });
+    }
+    const zone = goal.timezone || "Asia/Kolkata";
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: zone });
+    const plan = mutatePlan(structuredClone(source as Record<string, unknown>), input, today);
+    const days = Array.isArray(plan.days) ? (plan.days as Array<Record<string, unknown>>) : [];
+    const open = days.filter((day) => String(day.status || "") !== "skipped");
+    const finished =
+      open.length > 0 &&
+      open.every((day) => String(day.status || "") === "done" || (Array.isArray(day.tasks) && (day.tasks as Array<{ done?: boolean }>).every((task) => task.done)));
+    if (input.action === "complete" && finished) goal.status = "COMPLETED";
+    if (input.action === "reopen" && goal.status === "COMPLETED") goal.status = "ACTIVE";
+    if (goal.approvedPlan) goal.approvedPlan = plan;
+    if (goal.proposedPlan) goal.proposedPlan = plan;
+    goal.markModified("approvedPlan");
+    goal.markModified("proposedPlan");
+    goal.evidenceVersion = (goal.evidenceVersion || 0) + 1;
+    await goal.save();
+    await GoalPlanVersion.findOneAndUpdate(
+      { goalId: goal._id, version: goal.activePlanVersion || 1 },
+      { $set: { plan } },
+    );
+    return rebuildGoalDashboard(goal._id);
   },
 
   async replan(ownerId: string, goalId: string) {

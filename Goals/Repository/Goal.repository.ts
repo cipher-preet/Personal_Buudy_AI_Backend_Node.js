@@ -66,6 +66,7 @@ export const goalRepository = {
 
   listOwned: (ownerId: string) =>
     Goal.find({ ownerId: ownerFilter(ownerId) })
+      .select("title statement successCriteria timeframe status completeness healthStatus")
       .sort({ updatedAt: -1 })
       .limit(50)
       .lean(),

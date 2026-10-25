@@ -237,6 +237,28 @@ export const replanGoalController = async (req: CustomRequest, res: Response) =>
   }
 };
 
+export const goalWorkspaceActionController = async (req: CustomRequest, res: Response) => {
+  try {
+    const action = typeof req.body?.action === "string" ? req.body.action.trim() : "";
+    const dashboard = await goalServices.workspaceAction(ownerIdFrom(req), String(req.params.id || ""), {
+      action,
+      stepId: typeof req.body?.stepId === "string" ? req.body.stepId.trim() : "",
+      date: typeof req.body?.date === "string" ? req.body.date.trim() : "",
+      note: typeof req.body?.note === "string" ? req.body.note : "",
+      mode: typeof req.body?.mode === "string" ? req.body.mode.trim() : "",
+      recommendationId: typeof req.body?.recommendationId === "string" ? req.body.recommendationId.trim() : "",
+      adjustmentIds: Array.isArray(req.body?.adjustmentIds)
+        ? req.body.adjustmentIds.filter((item: unknown): item is string => typeof item === "string")
+        : [],
+      reflection: typeof req.body?.reflection === "string" ? req.body.reflection : "",
+    });
+    if (!dashboard) return ErrorResponse(res, STATUS_CODE.NOT_FOUND, "Goal not found.");
+    return SuccessResponse(res, STATUS_CODE.OK, { dashboard });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
 export const toggleGoalPlanItemController = async (req: CustomRequest, res: Response) => {
   try {
     const kind = req.body?.kind === "checklist_item" ? "checklist_item" : "day_task";

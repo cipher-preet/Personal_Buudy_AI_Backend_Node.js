@@ -6,6 +6,7 @@ import {
   deleteStagedNoteRepository,
   deleteStagedTaskRepository,
   getNoteConversationsBySpaceRepository,
+  getGenerationDatesBySpaceRepository,
   getNoteDateMarkersBySpaceRepository,
   getNoteWorkspacesRepository,
   getProfileSummaryRepository,
@@ -93,6 +94,7 @@ export const getUserSpacesByUserIdServices = async (
   limit?: number,
   cursor?: string,
   counts?: SpaceCountsMode,
+  card = false,
 ) => {
   try {
     const response = await getUserSpacesByUserIdRepository(
@@ -100,6 +102,7 @@ export const getUserSpacesByUserIdServices = async (
       limit,
       cursor,
       counts,
+      card,
     );
     return response;
   } catch (error) {
@@ -183,6 +186,7 @@ export const getStagedNotesBySpaceServices = async (
   cursor?: string,
   dateKey?: string,
   conversationKey?: string,
+  card = false,
 ) => {
   try {
     const response = await getStagedNotesBySpaceRepository(
@@ -192,6 +196,7 @@ export const getStagedNotesBySpaceServices = async (
       cursor,
       dateKey,
       conversationKey,
+      card,
     );
     return response;
   } catch (error) {
@@ -224,9 +229,9 @@ export const getNoteConversationsBySpaceServices = async (
 
 //----------------------------------------------------------------------------------------------
 
-export const getStagedNoteByIdServices = async (noteId: string) => {
+export const getStagedNoteByIdServices = async (noteId: string, card = false) => {
   try {
-    const response = await getStagedNoteByIdRepository(noteId);
+    const response = await getStagedNoteByIdRepository(noteId, card);
     return response;
   } catch (error) {
     console.log("error in Home service Layer ", error);
@@ -282,6 +287,7 @@ export const getStagedTasksBySpaceServices = async (
   limit?: number,
   cursor?: string,
   dateKey?: string,
+  card = false,
 ) => {
   try {
     const response = await getStagedTasksBySpaceRepository(
@@ -290,6 +296,7 @@ export const getStagedTasksBySpaceServices = async (
       limit,
       cursor,
       dateKey,
+      card,
     );
     return response;
   } catch (error) {
@@ -420,6 +427,27 @@ export const createStagedTaskServices = async (
       });
     }
     return response;
+  } catch (error) {
+    console.log("error in Home service Layer ", error);
+    throw error;
+  }
+};
+
+//----------------------------------------------------------------------------------------------
+
+export const getGenerationDatesBySpaceServices = async (
+  userId: string,
+  spaceId: string,
+  fromDate: string,
+  toDate: string,
+) => {
+  try {
+    return await getGenerationDatesBySpaceRepository(
+      userId,
+      spaceId,
+      fromDate,
+      toDate,
+    );
   } catch (error) {
     console.log("error in Home service Layer ", error);
     throw error;

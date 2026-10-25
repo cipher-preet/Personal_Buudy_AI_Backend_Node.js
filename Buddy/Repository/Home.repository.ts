@@ -93,10 +93,10 @@ const notDeletedFilter = {
  *
  * Only staged docs that were never mirrored (or changed since) are copied, and
  * each one is stamped with `mirroredAt`, so steady-state calls cost a single
- * indexed lookup instead of re-upserting up to 500 docs on every request.
+ * indexed lookup instead of re-upserting a large batch on every request.
  * Concurrent calls for the same user/space share one in-flight run.
  */
-const MIRROR_BATCH_LIMIT = 500;
+const MIRROR_BATCH_LIMIT = 100;
 const inflightMirrors = new Map<string, Promise<void>>();
 
 const pendingMirrorFilter = (userId: string, spaceId: string) => ({
@@ -249,37 +249,51 @@ const ensureListIndexes = () => {
   return indexesReady;
 };
 
-const NOTE_PREVIEW_LENGTH = 140;
+const noteBodyText = (note: Record<string, any>) => {
+  if (typeof note.body === "string" && note.body.trim()) {
+    return note.body.trim();
+  }
 
-const mapNoteListCard = (note: Record<string, any>) => {
-  const conversationId = note.conversationId ?? note.sourceConversationId;
-  const bodyPreview =
-    typeof note.bodyPreview === "string" && note.bodyPreview
-      ? note.bodyPreview
-      : typeof note.body === "string"
-        ? note.body.trim().slice(0, NOTE_PREVIEW_LENGTH)
-        : "";
+  if (typeof note.bodyPreview === "string") {
+    return note.bodyPreview.trim();
+  }
 
-  return {
+  return "";
+};
+
+const mapNoteListCard = (note: Record<string, any>, card = false) => {
+  const body = noteBodyText(note);
+  const cardFields = {
     id: String(note._id),
     title: note.title ?? "",
-    // List endpoints return preview only; full body stays on get-by-id.
-    bodyPreview,
-    confidence: note.confidence ?? null,
+    body,
     createdAt: note.createdAt ?? null,
     updatedAt: note.updatedAt ?? null,
+  };
+
+  if (card) {
+    return cardFields;
+  }
+
+  const conversationId = note.conversationId ?? note.sourceConversationId;
+
+  return {
+    ...cardFields,
+    bodyPreview: body,
+    confidence: note.confidence ?? null,
     conversationId: conversationId ? String(conversationId) : null,
   };
 };
 
 const mapStagedNoteCard = (note: Record<string, any>) => {
-  const body = typeof note.body === "string" ? note.body.trim() : "";
+  const body = noteBodyText(note);
   const conversationId = note.conversationId ?? note.sourceConversationId;
 
   return {
     id: String(note._id),
     title: note.title ?? "",
-    bodyPreview: body.slice(0, NOTE_PREVIEW_LENGTH),
+    body,
+    bodyPreview: body,
     confidence: note.confidence ?? null,
     createdAt: note.createdAt ?? null,
     updatedAt: note.updatedAt ?? null,
@@ -287,26 +301,34 @@ const mapStagedNoteCard = (note: Record<string, any>) => {
   };
 };
 
-const mapStagedTaskCard = (task: Record<string, any>) => {
+const mapStagedTaskCard = (task: Record<string, any>, card = false) => {
   const description =
     typeof task.description === "string"
       ? task.description
       : typeof task.body === "string"
         ? task.body
         : "";
-
-  return {
+  const body = description.trim();
+  const cardFields = {
     id: String(task._id),
     title: task.title ?? "",
-    body: description.trim(),
-    descriptionPreview: description.trim().slice(0, 140),
-    evidence: task.evidence ?? null,
+    body,
     operation: task.operation ?? task.status ?? null,
     priority: task.priority ?? null,
     dueDate: task.dueDate ?? null,
-    confidence: task.confidence ?? null,
     createdAt: task.createdAt ?? null,
     updatedAt: task.updatedAt ?? null,
+  };
+
+  if (card) {
+    return cardFields;
+  }
+
+  return {
+    ...cardFields,
+    descriptionPreview: body.slice(0, 140),
+    evidence: task.evidence ?? null,
+    confidence: task.confidence ?? null,
   };
 };
 
@@ -346,6 +368,7 @@ export const getUserSpacesByUserIdRepository = async (
   limit = 10,
   cursor?: string,
   counts: SpaceCountsMode = "all",
+  card = false,
 ) => {
   try {
     const pageSize = Math.min(Math.max(limit, 1), 50);
@@ -368,7 +391,7 @@ export const getUserSpacesByUserIdRepository = async (
     await ensureListIndexes();
 
     const spaces = await CreateSpace.find(query)
-      .select("-__v")
+      .select(card ? "_id spacename description createdAt updatedAt" : "-__v")
       .sort({ _id: -1 })
       .limit(pageSize + 1)
       .lean();
@@ -423,15 +446,32 @@ export const getUserSpacesByUserIdRepository = async (
       status: STATUS_CODE.OK,
       message: "User spaces fetched successfully.",
       data: {
-        spaces: results.map(space => ({
-          ...space,
-          ...(includeTasks
-            ? { tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0 }
-            : {}),
-          ...(includeNotes
-            ? { notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0 }
-            : {}),
-        })),
+        spaces: results.map(space => {
+          const countsForSpace = {
+            ...(includeTasks
+              ? { tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0 }
+              : {}),
+            ...(includeNotes
+              ? { notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0 }
+              : {}),
+          };
+
+          if (!card) {
+            return {
+              ...space,
+              ...countsForSpace,
+            };
+          }
+
+          return {
+            _id: space._id,
+            spacename: space.spacename ?? "",
+            description: space.description ?? "",
+            createdAt: space.createdAt ?? null,
+            updatedAt: space.updatedAt ?? null,
+            ...countsForSpace,
+          };
+        }),
         nextCursor,
       },
     };
@@ -880,6 +920,7 @@ export const getStagedNotesBySpaceRepository = async (
   cursor?: string,
   dateKey?: string,
   conversationKey?: string,
+  card = false,
 ) => {
   try {
     const pageSize = Math.min(Math.max(limit, 1), 50);
@@ -945,7 +986,7 @@ export const getStagedNotesBySpaceRepository = async (
     const notesCollection = db.collection("notes");
 
     // Reads from main `notes` only to avoid staged+main duplicates.
-    // List returns bodyPreview only; full body is loaded via get-by-id.
+    // The list includes the full body so home note cards are not cut off.
     // The total is only needed once per list, so later pages skip the count.
     const [pageDocs, total] = await Promise.all([
       notesCollection
@@ -956,29 +997,27 @@ export const getStagedNotesBySpaceRepository = async (
           {
             $project: {
               title: 1,
-              confidence: 1,
               createdAt: 1,
               updatedAt: 1,
-              conversationId: 1,
-              sourceConversationId: 1,
-              bodyPreview: {
-                $substrCP: [
-                  {
-                    $trim: {
-                      input: {
-                        $cond: [{ $eq: [{ $type: "$body" }, "string"] }, "$body", ""],
-                      },
-                    },
+              ...(card
+                ? {}
+                : {
+                    confidence: 1,
+                    conversationId: 1,
+                    sourceConversationId: 1,
+                  }),
+              body: {
+                $trim: {
+                  input: {
+                    $cond: [{ $eq: [{ $type: "$body" }, "string"] }, "$body", ""],
                   },
-                  0,
-                  NOTE_PREVIEW_LENGTH,
-                ],
+                },
               },
             },
           },
         ])
         .toArray(),
-      isFirstPage ? notesCollection.countDocuments(baseQuery) : undefined,
+      isFirstPage && !card ? notesCollection.countDocuments(baseQuery) : undefined,
     ]);
 
     const hasMore = pageDocs.length > pageSize;
@@ -991,11 +1030,11 @@ export const getStagedNotesBySpaceRepository = async (
     return {
       status: STATUS_CODE.OK,
       data: {
-        notes: results.map(mapNoteListCard),
+        notes: results.map((note) => mapNoteListCard(note, card)),
         nextCursor,
-        ...(typeof total === "number" ? { total } : {}),
-        ...(dateKey ? { date: dateKey } : {}),
-        ...(conversationKey ? { conversationId: conversationKey } : {}),
+        ...(!card && typeof total === "number" ? { total } : {}),
+        ...(!card && dateKey ? { date: dateKey } : {}),
+        ...(!card && conversationKey ? { conversationId: conversationKey } : {}),
       },
     };
   } catch (error) {
@@ -1149,7 +1188,7 @@ export const getNoteConversationsBySpaceRepository = async (
 
 //------------------------------------------------------------------------------------------------------------------
 
-export const getStagedNoteByIdRepository = async (noteId: string) => {
+export const getStagedNoteByIdRepository = async (noteId: string, card = false) => {
   try {
     if (!mongoose.isValidObjectId(noteId)) {
       return {
@@ -1160,7 +1199,7 @@ export const getStagedNoteByIdRepository = async (noteId: string) => {
 
     const noteObjectId = new mongoose.Types.ObjectId(noteId);
     const stagedNote = await StagedNotes.findById(noteId)
-      .select("title body evidence")
+      .select(card ? "title body" : "title body evidence")
       .lean();
 
     const mainNote = stagedNote
@@ -1169,7 +1208,11 @@ export const getStagedNoteByIdRepository = async (noteId: string) => {
           .collection("notes")
           .findOne(
             { _id: noteObjectId },
-            { projection: { title: 1, body: 1, evidence: 1 } },
+            {
+              projection: card
+                ? { title: 1, body: 1 }
+                : { title: 1, body: 1, evidence: 1 },
+            },
           )
           .catch(() => null);
 
@@ -1188,7 +1231,7 @@ export const getStagedNoteByIdRepository = async (noteId: string) => {
         id: String(note._id),
         title: note.title ?? "",
         body: note.body ?? "",
-        evidence: note.evidence ?? null,
+        ...(card ? {} : { evidence: note.evidence ?? null }),
       },
     };
   } catch (error) {
@@ -1402,6 +1445,7 @@ export const getStagedTasksBySpaceRepository = async (
   limit = 10,
   cursor?: string,
   dateKey?: string,
+  card = false,
 ) => {
   try {
     const pageSize = Math.min(Math.max(limit, 1), 50);
@@ -1485,19 +1529,18 @@ export const getStagedTasksBySpaceRepository = async (
           title: 1,
           description: 1,
           body: 1,
-          evidence: 1,
           operation: 1,
           status: 1,
           priority: 1,
           dueDate: 1,
-          confidence: 1,
           createdAt: 1,
           updatedAt: 1,
+          ...(card ? {} : { evidence: 1, confidence: 1 }),
         })
         .sort({ _id: -1 })
         .limit(pageSize + 1)
         .toArray(),
-      isFirstPage ? tasksCollection.countDocuments(baseQuery) : undefined,
+      isFirstPage && !card ? tasksCollection.countDocuments(baseQuery) : undefined,
     ]);
 
     const hasMore = pageDocs.length > pageSize;
@@ -1510,10 +1553,10 @@ export const getStagedTasksBySpaceRepository = async (
     return {
       status: STATUS_CODE.OK,
       data: {
-        tasks: results.map(mapStagedTaskCard),
+        tasks: results.map((task) => mapStagedTaskCard(task, card)),
         nextCursor,
-        ...(typeof total === "number" ? { total } : {}),
-        ...(dateKey ? { date: dateKey } : {}),
+        ...(!card && typeof total === "number" ? { total } : {}),
+        ...(!card && dateKey ? { date: dateKey } : {}),
       },
     };
   } catch (error) {
@@ -2169,6 +2212,207 @@ export const getTaskDateMarkersBySpaceRepository = async (
         dates: rows
           .map((row) => String(row._id ?? ""))
           .filter((key) => DATE_KEY_PATTERN.test(key)),
+        from: fromDate,
+        to: toDate,
+      },
+    };
+  } catch (error) {
+    console.log("error in Home repository Layer ", error);
+    throw error;
+  }
+};
+
+const GENERATION_DATE_SPAN_LIMIT = 62;
+
+const dateKeySpan = (fromDate: string, toDate: string) => {
+  const start = Date.parse(`${fromDate}T00:00:00.000Z`);
+  const end = Date.parse(`${toDate}T00:00:00.000Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return null;
+  }
+  return Math.round((end - start) / 86_400_000);
+};
+
+const isMissingCollection = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: number }).code === 26;
+
+const generationDateKeys = async (
+  collectionName: string,
+  pipeline: Record<string, unknown>[],
+) => {
+  try {
+    const rows = await mongoose.connection
+      .collection(collectionName)
+      .aggregate(pipeline)
+      .toArray();
+    return rows
+      .map((row) => String(row._id ?? ""))
+      .filter((key) => DATE_KEY_PATTERN.test(key));
+  } catch (error) {
+    if (isMissingCollection(error)) {
+      return [];
+    }
+    throw error;
+  }
+};
+
+/**
+ * Days in a space that can feed a mind map or document.
+ * Notes and transcripts use the day they were created. Tasks use their due day.
+ */
+export const getGenerationDatesBySpaceRepository = async (
+  userId: string,
+  spaceId: string,
+  fromDate: string,
+  toDate: string,
+) => {
+  try {
+    if (!DATE_KEY_PATTERN.test(fromDate) || !DATE_KEY_PATTERN.test(toDate)) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Invalid date range. Expected YYYY-MM-DD.",
+      };
+    }
+
+    if (fromDate > toDate) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "'from' must be on or before 'to'.",
+      };
+    }
+
+    const span = dateKeySpan(fromDate, toDate);
+    if (span === null || span > GENERATION_DATE_SPAN_LIMIT) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Date range is too large.",
+      };
+    }
+
+    const startBounds = dayBoundsUtc(fromDate);
+    const endBounds = dayBoundsUtc(toDate);
+    if (!startBounds || !endBounds) {
+      return {
+        status: STATUS_CODE.BAD_REQUEST,
+        message: "Unable to resolve date bounds.",
+      };
+    }
+
+    const owner = {
+      userId: createIdFilter(userId),
+      spaceId: createIdFilter(spaceId),
+    };
+    const createdWindow = {
+      $gte: startBounds.start,
+      $lt: endBounds.endExclusive,
+    };
+    const notDeleted = {
+      $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
+    };
+    const dateLabel = (field: string | Record<string, unknown>) => ({
+      $dateToString: {
+        format: "%Y-%m-%d",
+        date: field,
+        timezone: DEFAULT_REMINDER_TIMEZONE,
+      },
+    });
+
+    const createdPipeline = [
+      {
+        $match: {
+          ...owner,
+          $and: [notDeleted, { createdAt: createdWindow }],
+        },
+      },
+      { $group: { _id: dateLabel("$createdAt") } },
+    ];
+    const taskPipeline = [
+      {
+        $match: {
+          ...owner,
+          $and: [
+            notDeleted,
+            {
+              $or: [
+                { dueDate: { $gte: fromDate, $lte: toDate } },
+                {
+                  $and: [
+                    {
+                      $or: [
+                        { dueDate: null },
+                        { dueDate: { $exists: false } },
+                        { dueDate: "" },
+                      ],
+                    },
+                    { createdAt: createdWindow },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        $project: {
+          dateKey: {
+            $cond: [
+              {
+                $and: [{ $ne: ["$dueDate", null] }, { $ne: ["$dueDate", ""] }],
+              },
+              "$dueDate",
+              dateLabel("$createdAt"),
+            ],
+          },
+        },
+      },
+      { $match: { dateKey: { $gte: fromDate, $lte: toDate } } },
+      { $group: { _id: "$dateKey" } },
+    ];
+    const transcriptPipeline = [
+      {
+        $match: {
+          ...owner,
+          sttStatus: "completed",
+          $or: [
+            { capturedAt: createdWindow },
+            {
+              $and: [
+                {
+                  $or: [
+                    { capturedAt: null },
+                    { capturedAt: { $exists: false } },
+                  ],
+                },
+                { createdAt: createdWindow },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        $project: {
+          dateKey: dateLabel({ $ifNull: ["$capturedAt", "$createdAt"] }),
+        },
+      },
+      { $match: { dateKey: { $gte: fromDate, $lte: toDate } } },
+      { $group: { _id: "$dateKey" } },
+    ];
+
+    const groups = await Promise.all([
+      generationDateKeys("notes", createdPipeline),
+      generationDateKeys("stagedNotes", createdPipeline),
+      generationDateKeys("tasks", taskPipeline),
+      generationDateKeys("stagedTasks", taskPipeline),
+      generationDateKeys("transcript_chunks", transcriptPipeline),
+    ]);
+
+    return {
+      status: STATUS_CODE.OK,
+      data: {
+        dates: [...new Set(groups.flat())].sort(),
         from: fromDate,
         to: toDate,
       },

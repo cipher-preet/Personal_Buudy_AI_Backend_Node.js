@@ -13,6 +13,7 @@ import {
   deleteStagedNoteServices,
   deleteStagedTaskServices,
   getNoteConversationsBySpaceServices,
+  getGenerationDatesBySpaceServices,
   getNoteDateMarkersBySpaceServices,
   getNoteWorkspacesServices,
   getProfileSummaryServices,
@@ -73,9 +74,12 @@ const createSpaceController = async (
       );
     }
 
-    SuccessResponse(res, response.status, {
-      message: response.message || "Space created successfully",
-    });
+    sendHomePayload(
+      res,
+      response.status,
+      { message: response.message || "Space created successfully" },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -85,6 +89,24 @@ const createSpaceController = async (
 
 const getAuthenticatedUserId = (req: CustomRequest) =>
   req.authUser?.id || req.session?.user?.id;
+
+/** Desktop home asks for this so list and write responses omit fields it does not render. */
+const wantsCardView = (req: Request) => req.query.view === "card";
+
+const sendHomePayload = (
+  res: Response,
+  status: number,
+  payload: Record<string, unknown>,
+  card: boolean,
+) => {
+  if (!card) {
+    return SuccessResponse(res, status, payload);
+  }
+
+  return SuccessResponse(res, status, {
+    message: typeof payload.message === "string" ? payload.message : undefined,
+  });
+};
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -153,7 +175,12 @@ const deleteSpaceController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, response);
+    return sendHomePayload(
+      res,
+      response.status,
+      response as Record<string, unknown>,
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -231,13 +258,18 @@ const updateSpaceController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, {
-      message: response.message,
-      space:
-        response.data && "space" in response.data
-          ? response.data.space
-          : undefined,
-    });
+    return sendHomePayload(
+      res,
+      response.status,
+      {
+        message: response.message,
+        space:
+          response.data && "space" in response.data
+            ? response.data.space
+            : undefined,
+      },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -282,15 +314,21 @@ const getUserSpacesByUserIdController = async (
       );
     }
 
+    const card = wantsCardView(req);
     const response = await getUserSpacesByUserIdServices(
       userId,
       limit,
       cursor,
       countsParam as SpaceCountsMode,
+      card,
     );
 
     if (response.status === STATUS_CODE.BAD_REQUEST) {
       return ErrorResponse(res, response.status, response.message);
+    }
+
+    if (card && response.data) {
+      return SuccessResponse(res, response.status, response.data);
     }
 
     SuccessResponse(res, response.status, response);
@@ -338,7 +376,12 @@ const startListningController = async (
       );
     }
 
-    SuccessResponse(res, response.status, response);
+    return sendHomePayload(
+      res,
+      response.status,
+      response as Record<string, unknown>,
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -503,6 +546,7 @@ const getStagedNotesBySpaceController = async (
       cursor,
       date,
       conversationId || undefined,
+      wantsCardView(req),
     );
 
     if (response.data) {
@@ -600,7 +644,10 @@ const getStagedNoteByIdController = async (
       );
     }
 
-    const response = await getStagedNoteByIdServices(noteId.trim());
+    const response = await getStagedNoteByIdServices(
+      noteId.trim(),
+      wantsCardView(req),
+    );
 
     if (response.data) {
       return SuccessResponse(res, response.status, response.data);
@@ -648,7 +695,12 @@ const deleteStagedNoteController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, response);
+    return sendHomePayload(
+      res,
+      response.status,
+      response as Record<string, unknown>,
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -733,13 +785,18 @@ const updateStagedNoteController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, {
-      message: response.message,
-      note:
-        response.data && "note" in response.data
-          ? response.data.note
-          : undefined,
-    });
+    return sendHomePayload(
+      res,
+      response.status,
+      {
+        message: response.message,
+        note:
+          response.data && "note" in response.data
+            ? response.data.note
+            : undefined,
+      },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -799,6 +856,7 @@ const getStagedTasksBySpaceController = async (
       limit,
       cursor,
       date,
+      wantsCardView(req),
     );
 
     if (response.data) {
@@ -847,7 +905,12 @@ const deleteStagedTaskController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, response);
+    return sendHomePayload(
+      res,
+      response.status,
+      response as Record<string, unknown>,
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -953,13 +1016,18 @@ const updateStagedTaskController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, {
-      message: response.message,
-      task:
-        response.data && "task" in response.data
-          ? response.data.task
-          : undefined,
-    });
+    return sendHomePayload(
+      res,
+      response.status,
+      {
+        message: response.message,
+        task:
+          response.data && "task" in response.data
+            ? response.data.task
+            : undefined,
+      },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -1010,13 +1078,18 @@ const setStagedTaskStatusController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, {
-      message: response.message,
-      task:
-        response.data && "task" in response.data
-          ? response.data.task
-          : undefined,
-    });
+    return sendHomePayload(
+      res,
+      response.status,
+      {
+        message: response.message,
+        task:
+          response.data && "task" in response.data
+            ? response.data.task
+            : undefined,
+      },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -1081,13 +1154,18 @@ const createStagedNoteController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, {
-      message: response.message,
-      note:
-        response.data && "note" in response.data
-          ? response.data.note
-          : undefined,
-    });
+    return sendHomePayload(
+      res,
+      response.status,
+      {
+        message: response.message,
+        note:
+          response.data && "note" in response.data
+            ? response.data.note
+            : undefined,
+      },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -1153,13 +1231,18 @@ const createStagedTaskController = async (
       );
     }
 
-    return SuccessResponse(res, response.status, {
-      message: response.message,
-      task:
-        response.data && "task" in response.data
-          ? response.data.task
-          : undefined,
-    });
+    return sendHomePayload(
+      res,
+      response.status,
+      {
+        message: response.message,
+        task:
+          response.data && "task" in response.data
+            ? response.data.task
+            : undefined,
+      },
+      wantsCardView(req),
+    );
   } catch (error) {
     next(error);
   }
@@ -1275,6 +1358,60 @@ const getTaskDateMarkersBySpaceController = async (
 
 //--------------------------------------------------------------------------------
 
+const getGenerationDatesBySpaceController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<any> => {
+  try {
+    const userId = req.query.userId as string;
+    const spaceId = req.query.spaceId as string;
+    const from = typeof req.query.from === "string" ? req.query.from.trim() : "";
+    const to = typeof req.query.to === "string" ? req.query.to.trim() : "";
+
+    if (!userId?.trim()) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'userId' query parameter.",
+      );
+    }
+
+    if (!spaceId?.trim()) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Missing 'spaceId' query parameter.",
+      );
+    }
+
+    if (!DATE_KEY_PATTERN.test(from) || !DATE_KEY_PATTERN.test(to)) {
+      return ErrorResponse(
+        res,
+        STATUS_CODE.BAD_REQUEST,
+        "Invalid 'from'/'to'. Expected YYYY-MM-DD.",
+      );
+    }
+
+    const response = await getGenerationDatesBySpaceServices(
+      userId.trim(),
+      spaceId.trim(),
+      from,
+      to,
+    );
+
+    if (response.data) {
+      return SuccessResponse(res, response.status, response.data);
+    }
+
+    return ErrorResponse(res, response.status, response.message);
+  } catch (error) {
+    next(error);
+  }
+};
+
+//--------------------------------------------------------------------------------
+
 const gettranscriptchunkcontroller = async (  req: CustomRequest,
   res: Response,
   next: NextFunction,) => {
@@ -1307,6 +1444,7 @@ export {
   deleteSpaceController,
   deleteStagedNoteController,
   deleteStagedTaskController,
+  getGenerationDatesBySpaceController,
   getNoteDateMarkersBySpaceController,
   getNoteWorkspacesController,
   getProfileSummaryController,

@@ -11,6 +11,7 @@ import {
   GoalSpaceLink,
 } from "./Modals/goal.modal.js";
 import { COUNTED, healthFor, milestoneStates, numericProgress, type EvidenceInput, type MilestoneInput } from "./progress.js";
+import { buildGoalWorkspace } from "./workspace.js";
 
 const dayKey = (date = new Date(), timeZone = "Asia/Kolkata") =>
   date.toLocaleDateString("en-CA", { timeZone: timeZone || "Asia/Kolkata" });
@@ -391,6 +392,7 @@ export const rebuildGoalDashboard = async (goalId: unknown) => {
       },
     },
     provisional: Boolean((plan as { provisional?: boolean }).provisional),
+    workspace: await buildGoalWorkspace(goal),
   };
 
   await GoalDashboard.findOneAndUpdate(
@@ -408,7 +410,10 @@ export const readGoalDashboard = async (goalId: unknown) => {
   const points = (cached?.payload as { chart?: { points?: Array<{ actual?: number | null }> } } | undefined)?.chart
     ?.points;
   const chartNeedsRebuild = !Array.isArray(points) || points.length < 2 || points.every((point) => point.actual == null);
-  if (cached && cached.evidenceVersion === (goal.evidenceVersion || 0) && cached.payload && !chartNeedsRebuild) {
+  const workspace = (cached?.payload as { workspace?: { revision?: number } } | undefined)?.workspace;
+  const workspaceMissing = !workspace;
+  const workspaceStale = workspace?.revision !== 3;
+  if (cached && cached.evidenceVersion === (goal.evidenceVersion || 0) && cached.payload && !chartNeedsRebuild && !workspaceMissing && !workspaceStale) {
     return cached.payload;
   }
   return rebuildGoalDashboard(goalId);

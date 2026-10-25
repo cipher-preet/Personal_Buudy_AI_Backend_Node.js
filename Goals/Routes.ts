@@ -20,6 +20,7 @@ import {
   getGoalSourcesController,
   refreshGoalResearchController,
   replanGoalController,
+  goalWorkspaceActionController,
 } from "./Controllers/Goal.controller.js";
 
 const router = Router();
@@ -37,6 +38,7 @@ router.post("/:id/recommendations/:recommendationId/feedback", feedbackGoalContr
 router.post("/:id/pause", pauseGoalController);
 router.post("/:id/plan/approve", approveGoalRevisionController);
 router.post("/:id/plan/items/toggle", toggleGoalPlanItemController);
+router.post("/:id/workspace/actions", goalWorkspaceActionController);
 router.get("/:id/sources", getGoalSourcesController);
 router.post("/:id/research", refreshGoalResearchController);
 router.post("/:id/replan", replanGoalController);

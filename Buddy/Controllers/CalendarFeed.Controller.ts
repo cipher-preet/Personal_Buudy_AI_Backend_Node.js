@@ -60,6 +60,7 @@ export const getCalendarFeedController = async (
       String(userId),
       parsedFrom.value!,
       parsedTo.value!,
+      req.query.view === "card",
     );
 
     if (response.status !== STATUS_CODE.OK || !response.data) {
