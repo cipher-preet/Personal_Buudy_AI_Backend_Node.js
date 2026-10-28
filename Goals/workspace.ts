@@ -6,6 +6,7 @@ import {
   GoalJob,
   GoalReview,
 } from "./Modals/goal.modal.js";
+import { clarifyStoredPlan, repairThinStoredPlan } from "./stepClarity.js";
 
 type Dict = Record<string, unknown>;
 
@@ -83,14 +84,43 @@ const mondayOf = (key: string) => {
   return addDays(key, delta);
 };
 
+const echoesHeading = (heading: string, value: string) => {
+  const norm = (input: string) => input.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const left = norm(heading);
+  const right = norm(value);
+  if (!left || !right) return false;
+  if (right === left) return true;
+  if (right.startsWith(left) && right.length <= left.length + 42) return true;
+  return left.length > 8 && right.includes(left) && right.length <= left.length + 42;
+};
+
+const cleanStepTitle = (value: string) => value.replace(/^(?:day|d)\s*\d+\s*[-–—:]\s*/i, "").trim() || value.trim();
+
+const explainStep = (title: string, tasks: string[], done: string) => {
+  const useful = tasks.map((item) => item.trim().replace(/\.$/, "")).filter((item) => item && item.toLowerCase() !== title.toLowerCase());
+  const lead = useful.length >= 2 ? `${useful[0]}. Then ${useful[1][0].toLowerCase()}${useful[1].slice(1)}.` : useful[0] ? `${useful[0]}.` : title;
+  const finish = done.trim().replace(/\.$/, "");
+  if (finish && finish.toLowerCase() !== title.toLowerCase() && !lead.toLowerCase().includes(finish.toLowerCase())) {
+    return `${lead} Done when ${finish[0].toLowerCase()}${finish.slice(1)}.`;
+  }
+  return lead;
+};
+
+const explanationFor = (heading: string, current: string, detail: string) => current.trim() || detail.trim() || heading.trim();
+
 const parseHorizon = (timeframe: string, maxDay: number) => {
-  const source = timeframe.toLowerCase();
-  const days = source.match(/(\d+)\s*day/);
-  if (days) return Math.max(Number(days[1]) || 0, maxDay, 1);
-  const weeks = source.match(/(\d+)\s*week/);
-  if (weeks) return Math.max((Number(weeks[1]) || 0) * 7, maxDay, 7);
+  const source = timeframe.toLowerCase().replace(/(\d+)\s*-\s*(day|week|month|year)/g, "$1 $2");
+  if (/\b(a year|1 year|12 months|within a year)\b/.test(source)) return Math.max(365, maxDay);
+  const years = source.match(/(\d+)\s*year/);
+  if (years) return Math.max((Number(years[1]) || 1) * 365, maxDay, 365);
   const months = source.match(/(\d+)\s*month/);
   if (months) return Math.max((Number(months[1]) || 0) * 30, maxDay, 30);
+  if (/\b6 months\b/.test(source)) return Math.max(180, maxDay);
+  const weeks = source.match(/(\d+)\s*week/);
+  if (weeks) return Math.max((Number(weeks[1]) || 0) * 7, maxDay, 7);
+  const days = source.match(/(\d+)\s*day/);
+  if (days) return Math.max(Number(days[1]) || 0, maxDay, 1);
+  if (/no fixed/.test(source)) return Math.max(90, maxDay);
   return Math.max(maxDay, 30);
 };
 
@@ -119,16 +149,7 @@ const inferMetric = (goal: Dict, plan: Dict) => {
   };
 };
 
-const categoryFor = (title: string, focus: string) => {
-  const source = `${title} ${focus}`.toLowerCase();
-  if (/outreach|message|email|\bdm\b/.test(source)) return "Outreach";
-  if (/product hunt|twitter|thread|launch/.test(source)) return "Launch prep";
-  if (/landing|headline|webflow|carrd|gif|cta/.test(source)) return "Landing page";
-  if (/onboard|demo/.test(source)) return "Onboarding";
-  if (/interview|persona|audience|research/.test(source)) return "Research";
-  if (/referral|invite/.test(source)) return "Referral";
-  return text(focus, 28) || "Step";
-};
+const categoryFor = (_title: string, focus: string) => text(focus, 28) || "Step";
 
 const sourceLabel = (sourceType: string) => {
   const key = sourceType.toLowerCase();
@@ -181,6 +202,7 @@ export const mutatePlan = (plan: Dict, input: WorkspaceActionInput, today: strin
       const mode = text(input.mode, 20) || (text(input.date, 20) === "skip" ? "skip" : "move");
       if (mode === "skip" || input.date === "skip") {
         day.status = "skipped";
+        day.skippedOn = today;
       } else if (mode === "split") {
         splitDay(days, index, today, text(input.date, 20));
       } else {
@@ -298,19 +320,19 @@ const applyAdjustments = (plan: Dict, days: Dict[], adjustmentIds: string[], tod
         id: `habit-${today}`,
         dayIndex: days.length + 1,
         scheduledDate: today,
-        title: "20-minute daily outreach block",
-        focus: "Short daily outreach until the pace recovers.",
+        title: "20-minute focus block",
+        focus: "One short block on the next real step.",
         tasks: [
           {
             id: `habit-${today}-t`,
-            text: "Send the daily outreach block",
+            text: "Work the next open step for 20 minutes and write what finished",
             done: false,
-            why: "A small daily block is what moved the metric last time.",
-            definitionOfDone: "The block is sent and logged.",
+            why: "A small finished block is easier to continue than extra busywork.",
+            definitionOfDone: "The block is done and what finished is written down.",
           },
         ],
         status: "open",
-        category: "Outreach",
+        category: "Focus",
         minutes: 20,
       });
     } else if (kind === "pin" && stepId) {
@@ -320,10 +342,81 @@ const applyAdjustments = (plan: Dict, days: Dict[], adjustmentIds: string[], tod
 };
 
 const isDoneDay = (day: Dict) => {
-  if (text(day.status, 20) === "done") return true;
-  if (text(day.status, 20) === "reopened" || text(day.status, 20) === "skipped") return false;
-  const tasks = asArray(day.tasks);
-  return tasks.length > 0 && tasks.every((task) => Boolean(task.done));
+  if (text(day.status, 20).toLowerCase() === "reopened") return false;
+  // Only a person marking the step done sets completedOn. A model "done" flag is not progress.
+  return Boolean(text(day.completedOn, 40));
+};
+
+const stepsFromMilestones = (plan: Dict): Dict[] =>
+  asArray(plan.milestones).map((milestone, index) => {
+    const title = text(milestone.title, 160) || `Step ${index + 1}`;
+    const criteria = Array.isArray(milestone.successCriteria)
+      ? milestone.successCriteria.map((item) => text(item, 240)).filter(Boolean)
+      : [];
+    return {
+      id: `milestone-step-${index + 1}`,
+      dayIndex: index + 1,
+      title,
+      focus: criteria[0] || title,
+      definitionOfDone: criteria[0] || title,
+      status: "open",
+      minutes: 45,
+      tasks: (criteria.length ? criteria : [title]).map((item, taskIndex) => ({
+        id: `milestone-step-${index + 1}-t${taskIndex + 1}`,
+        text: item,
+        done: false,
+        why: `${title}: ${item}`,
+        definitionOfDone: item,
+      })),
+    };
+  });
+
+const isPlan = (value: unknown): value is Dict => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export const persistClearSteps = async (goal: {
+  approvedPlan?: unknown;
+  proposedPlan?: unknown;
+  markModified: (path: string) => void;
+  save: () => Promise<unknown>;
+  timeframe?: string;
+  statement?: string;
+  title?: string;
+  description?: string;
+  goalType?: string;
+  category?: string;
+  successCriteria?: string;
+  availableHoursPerWeek?: number | null;
+  contextProfile?: unknown;
+  understanding?: unknown;
+  timezone?: string;
+  createdAt?: Date | string;
+}) => {
+  try {
+    const approved = isPlan(goal.approvedPlan) ? goal.approvedPlan : null;
+    const proposed = isPlan(goal.proposedPlan) ? goal.proposedPlan : null;
+    const source = approved || proposed;
+    if (!source || !Array.isArray(source.days) || source.days.length === 0) return;
+    const zone = goal.timezone || "Asia/Kolkata";
+    const planStart = text(source.startedOn, 20);
+    const created = goal.createdAt ? dayKey(new Date(goal.createdAt), zone) : "";
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(planStart) ? planStart : created;
+    const repaired = repairThinStoredPlan(source, goal as Dict, start);
+    const clarified = clarifyStoredPlan(repaired.plan);
+    if (!repaired.changed && !clarified.changed) return;
+    const proposedMatches =
+      Boolean(approved && proposed) && JSON.stringify(approved?.days || []) === JSON.stringify(proposed?.days || []);
+    if (approved) {
+      goal.approvedPlan = clarified.plan;
+      goal.markModified("approvedPlan");
+    }
+    if ((proposed && !approved) || proposedMatches) {
+      goal.proposedPlan = proposedMatches ? JSON.parse(JSON.stringify(clarified.plan)) : clarified.plan;
+      goal.markModified("proposedPlan");
+    }
+    await goal.save();
+  } catch (error) {
+    console.error("Unable to store clearer goal steps", error);
+  }
 };
 
 export const buildGoalWorkspace = async (goal: {
@@ -346,44 +439,75 @@ export const buildGoalWorkspace = async (goal: {
   const zone = goal.timezone || "Asia/Kolkata";
   const today = dayKey(new Date(), zone);
   const startedOn = text(plan.startedOn, 20) || dayKey(goal.createdAt ? new Date(goal.createdAt) : new Date(), zone);
-  const rawDays = asArray(plan.days);
+  const storedDays = asArray(plan.days);
+  const rawDays = storedDays.length ? storedDays : stepsFromMilestones(plan);
   const maxIndex = rawDays.reduce((max, day) => Math.max(max, Number(day.dayIndex) || 0), 0);
-  let horizon = parseHorizon(`${goal.timeframe || ""} ${text(asRecord(plan.successDefinition).deadlineLabel, 80)}`, Math.max(maxIndex, rawDays.length, 1));
+  const deadlineLabel = text(asRecord(plan.successDefinition).deadlineLabel, 80);
+  const explicitDeadline = `${goal.timeframe || ""} ${deadlineLabel}`.trim();
+  let horizon = parseHorizon(explicitDeadline || goal.statement || "", Math.max(maxIndex, rawDays.length, 1));
+
+  const indexed = rawDays.map((day, index) => Number(day.dayIndex) || index + 1);
+  const maxPackedIndex = indexed.length ? Math.max(...indexed) : 0;
+  const dated = rawDays
+    .map((day) => text(day.scheduledDate, 20))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+    .sort();
+  const calendarSpan = dated.length >= 2 ? diffDays(dated[0], dated[dated.length - 1]) + 1 : maxPackedIndex;
+  const packed = rawDays.length >= 2 && horizon >= 21 && calendarSpan < horizon * 0.5 && maxPackedIndex <= rawDays.length + 3;
+  const slotFor = (index: number) => {
+    if (!packed) return 0;
+    if (index === rawDays.length - 1) return horizon;
+    return 1 + Math.round((index * (horizon - 1)) / Math.max(rawDays.length - 1, 1));
+  };
 
   const steps = rawDays.map((day, index) => {
-    const dayIndex = Number(day.dayIndex) || index + 1;
-    const scheduled = /^\d{4}-\d{2}-\d{2}$/.test(text(day.scheduledDate, 20))
-      ? text(day.scheduledDate, 20)
-      : addDays(startedOn, Math.max(dayIndex - 1, 0));
-    const tasks = asArray(day.tasks).map((task, taskIndex) => ({
-      id: text(task.id, 80) || `d${dayIndex}-t-${taskIndex + 1}`,
-      text: text(task.text, 240),
-      done: Boolean(task.done),
-      why: text(task.why, 480),
-      definitionOfDone: text(task.definitionOfDone, 320),
-    }));
+    const displayIndex = index + 1;
+    const storedDate = text(day.scheduledDate, 20);
+    const hasDate = /^\d{4}-\d{2}-\d{2}$/.test(storedDate);
+    const slot = hasDate ? 0 : slotFor(index);
+    const calendarDay = Number(day.scheduleDay) || Number(day.dayIndex) || displayIndex;
+    const scheduled = hasDate ? storedDate : addDays(startedOn, Math.max((slot || calendarDay) - 1, 0));
+    const dayTitle = cleanStepTitle(text(day.title, 160) || `Step ${displayIndex}`);
+    const tasks = asArray(day.tasks).map((task, taskIndex) => {
+      const action = text(task.text, 240);
+      const storedDone = text(task.definitionOfDone, 320);
+      const definitionOfDone = storedDone;
+      return {
+        id: text(task.id, 80) || `d${displayIndex}-t-${taskIndex + 1}`,
+        text: action,
+        done: Boolean(task.done),
+        why: text(task.why, 240),
+        definitionOfDone,
+      };
+    });
     const done = isDoneDay(day);
-    const skipped = text(day.status, 20) === "skipped";
+    const skipped = text(day.status, 20).toLowerCase() === "skipped" && Boolean(text(day.skippedOn, 40));
     const status = skipped ? "skipped" : done ? "done" : scheduled < today ? "overdue" : scheduled === today ? "today" : "open";
     const minutes = Number(day.minutes) || (typeof day.hours === "number" ? Math.round(Number(day.hours) * 60) : 45);
+    const storedFocus = text(day.focus, 600).replace(/\s*Do this by day \d+ of \d+\.?/gi, "").trim();
+    const why = storedFocus || explainStep(dayTitle, tasks.map((task) => task.text), text(day.definitionOfDone, 320));
+    const storedCategory = text(day.category, 40);
+    const category = storedCategory && !echoesHeading(dayTitle, storedCategory) ? storedCategory : categoryFor(dayTitle, why);
+    const storedOutcome = text(day.definitionOfDone, 320);
+    const outcome = storedOutcome && !echoesHeading(dayTitle, storedOutcome) ? storedOutcome : "";
     return {
-      id: stepIdOf({ ...day, dayIndex }),
-      dayIndex,
+      id: stepIdOf(day),
+      dayIndex: displayIndex,
       date: scheduled,
       dateLabel: labelDate(scheduled),
-      title: text(day.title, 160) || `Day ${dayIndex}`,
-      category: text(day.category, 40) || categoryFor(text(day.title, 160), text(day.focus, 160)),
+      title: dayTitle,
+      category,
       minutes,
-      example: Boolean(day.example || plan.provisional),
+      example: Boolean(day.example),
       status,
       checklist: tasks,
       checklistDone: tasks.filter((task) => task.done).length,
       checklistTotal: tasks.length,
-      why: text(day.focus, 480) || text(tasks[0]?.why, 480),
-      outcome: text(day.definitionOfDone, 320) || text(tasks[0]?.definitionOfDone, 320),
-      doneWhen: text(day.definitionOfDone, 320) || text(tasks[0]?.definitionOfDone, 320),
+      why,
+      outcome,
+      doneWhen: outcome,
       notes: text(day.notes, 4000),
-      partOf: text(day.partOf, 80) || text(day.category, 40) || categoryFor(text(day.title, 160), text(day.focus, 160)),
+      partOf: text(day.partOf, 80) && !echoesHeading(dayTitle, text(day.partOf, 80)) ? text(day.partOf, 80) : category,
       overdueDays: scheduled < today && !done && !skipped ? diffDays(scheduled, today) : 0,
     };
   });
@@ -478,10 +602,12 @@ export const buildGoalWorkspace = async (goal: {
   const pace = achieved ? "achieved" : behind ? "at_risk" : "on_track";
   const finishedEarlyDays = achieved && today < endsOn ? diffDays(today, endsOn) : null;
 
+  const usableCoach = (value: string) => Boolean(value);
   const coachText =
-    text(review?.focus, 320) ||
-    text(plan.coachNote, 320) ||
-    text(plan.immediateNextStep, 320) ||
+    (todayStep && todayStep.why.split(/\s+/).length >= 12 && usableCoach(todayStep.why) ? todayStep.why : "") ||
+    (usableCoach(text(review?.focus, 320)) ? text(review?.focus, 320) : "") ||
+    (usableCoach(text(plan.coachNote, 320)) ? text(plan.coachNote, 320) : "") ||
+    (usableCoach(text(plan.immediateNextStep, 320)) ? text(plan.immediateNextStep, 320) : "") ||
     (todayStep ? `Start with “${todayStep.title}”.` : "Your next step will show here once the plan is ready.");
   const coachEvidence = await Promise.all(
     evidence.slice(0, 3).map(async (item) => ({
@@ -502,7 +628,7 @@ export const buildGoalWorkspace = async (goal: {
       id,
       title: text(strategy.title, 160),
       body: text(strategy.body, 600),
-      overview: text(strategy.why, 400) || text(strategy.body, 280),
+      overview: explanationFor(text(strategy.title, 160), text(strategy.why, 400), text(strategy.body, 600)),
       done,
       total: pool.length,
       percent: pool.length ? Math.round((done / pool.length) * 100) : 0,
@@ -529,7 +655,7 @@ export const buildGoalWorkspace = async (goal: {
       reason: text(item.reason, 600),
       windowLabel: text(item.measurableGoal, 40) || `${horizon} days`,
       howSteps,
-      category: text(item.milestoneTitle, 40) || "Positioning",
+      category: text(item.milestoneTitle, 40) || "Next step",
       added: applied.has(id),
       related: steps.slice(0, 4).map((step) => ({ id: step.id, label: step.title, done: step.status === "done" })),
     };
@@ -543,6 +669,7 @@ export const buildGoalWorkspace = async (goal: {
   const usersTarget = todayTarget;
   const pacePercent = todayTarget && current != null ? Math.round((current / todayTarget) * 100) : paceRatio != null ? Math.round(paceRatio * 100) : null;
   const nextOpenDate = addDays(today, 1);
+  const goalName = text(goal.title, 80) || "this goal";
   const adjustments = [
     ...attention.slice(0, 2).map((step) => ({
       id: `move|${step.id}|${nextOpenDate}`,
@@ -554,9 +681,9 @@ export const buildGoalWorkspace = async (goal: {
     ...(behind
       ? [
           {
-            id: "habit|outreach|20",
-            title: "Add a 20-minute daily outreach block",
-            reason: current != null ? `You are at ${current}${target != null ? ` of ${todayTarget} targeted today` : ""}.` : "A short daily block recovers pace.",
+            id: "habit|focus|20",
+            title: `Spend 20 minutes on the next step for “${goalName}”`,
+            reason: "A short block on the real next step, not extra busywork.",
             selected: true,
             kind: "habit",
           },
@@ -571,23 +698,31 @@ export const buildGoalWorkspace = async (goal: {
     })),
   ];
 
+  const nextRecommendation = recommendations.find((item) => !item.added);
   const recoveryActions = [
     ...attention.slice(0, 2).map((step, index) => ({
       id: `move|${step.id}|${addDays(today, index + 1)}`,
-      title: index === 0 && attention.length > 1 ? `Merge the overdue landing work into one sprint (${labelDate(addDays(today, 1))})` : `Move “${step.title}” to ${labelDate(addDays(today, 1))}`,
-      detail: "The coach keeps the rest of the plan in order.",
+      title: `Move “${step.title}” to ${labelDate(addDays(today, index + 1))}`,
+      detail: "Keep the rest of the plan in the same order.",
       example: Boolean(plan.provisional),
     })),
-    {
-      id: "habit|outreach|20",
-      title: `Add a second outreach wave on ${labelDate(addDays(today, 2))}`,
-      detail: "A short extra wave is the fastest way back to the target curve.",
-      example: Boolean(plan.provisional),
-    },
+    nextRecommendation
+      ? {
+          id: `pin|${nextRecommendation.id}|`,
+          title: `Do “${nextRecommendation.title}” next`,
+          detail: nextRecommendation.reason || "This is the next concrete action in the plan.",
+          example: Boolean(plan.provisional),
+        }
+      : {
+          id: "habit|focus|20",
+          title: `Spend 20 minutes on the next step for “${goalName}”`,
+          detail: "Finish one real step before adding new work.",
+          example: Boolean(plan.provisional),
+        },
   ];
 
   return {
-    revision: 3,
+    revision: 5,
     title: text(goal.title, 160) || "Goal",
     status: goal.status || "",
     startedOn,

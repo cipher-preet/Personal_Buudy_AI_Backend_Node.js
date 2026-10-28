@@ -135,6 +135,31 @@ const applyUnderstandingAnswer = (
 ) => {
   if (!text) return;
   const key = stepId.toLowerCase();
+  if (key === "approach" || key.includes("framework")) {
+    return;
+  }
+  if (key.includes("product-type") || key.includes("product-kind")) {
+    writeContext(goal, "productType", text);
+    if (!goal.category) goal.category = text.slice(0, 120);
+    goal.completeness = Math.max(goal.completeness || 0, 30);
+    return;
+  }
+  if (key === "subject" || key.includes("subject")) {
+    if (!goal.description) goal.description = text.slice(0, 2000);
+    writeContext(goal, "description", text);
+    goal.completeness = Math.max(goal.completeness || 0, 30);
+    return;
+  }
+  if (key.includes("budget")) {
+    writeContext(goal, "budget", text);
+    goal.completeness = Math.max(goal.completeness || 0, 55);
+    return;
+  }
+  if (key === "stage" || key.includes("stage")) {
+    writeContext(goal, "startingLevel", text);
+    goal.completeness = Math.max(goal.completeness || 0, 35);
+    return;
+  }
   if (key.includes("current-level") || key.includes("starting-level") || key.includes("current-role")) {
     writeContext(goal, key.includes("role") ? "currentRole" : "startingLevel", text);
     goal.completeness = Math.max(goal.completeness || 0, 25);
@@ -266,7 +291,13 @@ export const goalServices = {
       stepId: resolvedStepId,
       control,
     });
-    const jobType: GoalJobType = control === "confirm_baseline" ? "plan" : "clarify";
+    const buildsPlan =
+      control === "confirm_baseline" ||
+      control === "brief" ||
+      control === "space_picker" ||
+      resolvedStepId === "approach" ||
+      resolvedStepId === "build-plan";
+    const jobType: GoalJobType = buildsPlan ? "plan" : "clarify";
     const job = await enqueue(goal, ownerId, jobType);
     return { goalId: String(goal._id), job: serializeJob(job) };
   },
@@ -289,7 +320,7 @@ export const goalServices = {
     goal.status = "CONTEXT_ANALYSIS";
     goal.completeness = Math.max(goal.completeness || 0, 70);
     await goal.save();
-    const job = await enqueue(goal, ownerId, "baseline");
+    const job = await enqueue(goal, ownerId, "plan");
     return {
       goal: serializeGoal(goal.toObject()),
       job: serializeJob(job),
@@ -592,7 +623,7 @@ export const goalServices = {
     const open = days.filter((day) => String(day.status || "") !== "skipped");
     const finished =
       open.length > 0 &&
-      open.every((day) => String(day.status || "") === "done" || (Array.isArray(day.tasks) && (day.tasks as Array<{ done?: boolean }>).every((task) => task.done)));
+      open.every((day) => Boolean(day.completedOn));
     if (input.action === "complete" && finished) goal.status = "COMPLETED";
     if (input.action === "reopen" && goal.status === "COMPLETED") goal.status = "ACTIVE";
     if (goal.approvedPlan) goal.approvedPlan = plan;

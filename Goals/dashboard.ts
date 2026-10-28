@@ -1,5 +1,3 @@
-import mongoose from "mongoose";
-
 import {
   Goal,
   GoalDashboard,
@@ -8,10 +6,9 @@ import {
   GoalRecommendation,
   GoalReview,
   GoalSnapshot,
-  GoalSpaceLink,
 } from "./Modals/goal.modal.js";
 import { COUNTED, healthFor, milestoneStates, numericProgress, type EvidenceInput, type MilestoneInput } from "./progress.js";
-import { buildGoalWorkspace } from "./workspace.js";
+import { buildGoalWorkspace, persistClearSteps } from "./workspace.js";
 
 const dayKey = (date = new Date(), timeZone = "Asia/Kolkata") =>
   date.toLocaleDateString("en-CA", { timeZone: timeZone || "Asia/Kolkata" });
@@ -19,77 +16,6 @@ const dayKey = (date = new Date(), timeZone = "Asia/Kolkata") =>
 const previousDayKey = (today: string) => {
   const [year, month, day] = today.split("-").map(Number);
   return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
-};
-
-const DONE_STATUSES = new Set(["done", "completed", "complete", "closed"]);
-
-const isDoneStatus = (value: unknown) => DONE_STATUSES.has(String(value || "").trim().toLowerCase());
-
-const blendActual = (
-  planRatio: number | null,
-  spaceTasks: Array<{ status?: string; operation?: string }>,
-  noteCount: number,
-  transcriptCount = 0,
-) => {
-  const spaceTotal = spaceTasks.length;
-  const spaceDone = spaceTasks.filter((item) => isDoneStatus(item.status || item.operation)).length;
-  const spacePct = spaceTotal ? (spaceDone / spaceTotal) * 100 : null;
-  const material = Math.min(noteCount + transcriptCount, 8);
-  const materialPct = material ? (material / 8) * 100 : 0;
-  const weights: number[] = [];
-  const values: number[] = [];
-  if (planRatio != null) {
-    weights.push(0.5);
-    values.push(planRatio);
-  }
-  if (spacePct != null) {
-    weights.push(0.35);
-    values.push(spacePct);
-  }
-  if (material) {
-    weights.push(0.15);
-    values.push(materialPct);
-  }
-  if (!values.length) return 0;
-  if (planRatio == null && spacePct == null) {
-    return Math.min(15, Math.round(materialPct * 0.2));
-  }
-  const score =
-    values.reduce((sum, value, index) => sum + value * weights[index], 0) / weights.reduce((left, right) => left + right, 0);
-  return Math.round(Math.min(100, Math.max(0, score)));
-};
-
-const loadLinkedSpaceStats = async (
-  goalId: mongoose.Types.ObjectId,
-  ownerId: mongoose.Types.ObjectId,
-) => {
-  const links = await GoalSpaceLink.find({ goalId }).select({ spaceId: 1 }).lean();
-  const spaceIds = links.map((link) => link.spaceId).filter(Boolean);
-  if (!spaceIds.length) {
-    return { linked: false, tasks: [] as Array<{ status?: string; operation?: string }>, notes: 0 };
-  }
-  const filter = {
-    userId: ownerId,
-    spaceId: { $in: spaceIds },
-    $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }],
-  };
-  const [tasks, notes] = await Promise.all([
-    mongoose.connection
-      .collection("tasks")
-      .find(filter, { projection: { status: 1, operation: 1 } })
-      .sort({ updatedAt: -1 })
-      .limit(40)
-      .toArray(),
-    mongoose.connection.collection("notes").countDocuments(filter),
-  ]);
-  return {
-    linked: true,
-    tasks: tasks.map((row) => ({
-      status: String(row.status || ""),
-      operation: String(row.operation || ""),
-    })),
-    notes,
-  };
 };
 
 const rankActions = (
@@ -121,6 +47,7 @@ const rankActions = (
 export const rebuildGoalDashboard = async (goalId: unknown) => {
   const goal = await Goal.findById(goalId);
   if (!goal) return null;
+  await persistClearSteps(goal);
   const plan = (goal.approvedPlan || goal.proposedPlan || {}) as {
     milestones?: MilestoneInput[];
     summary?: string;
@@ -271,10 +198,7 @@ export const rebuildGoalDashboard = async (goalId: unknown) => {
           source: "runtime",
         }));
 
-  const spaceStats = await loadLinkedSpaceStats(goal._id, goal.ownerId);
-  const actual = spaceStats.linked
-    ? blendActual(executionRatio, spaceStats.tasks, spaceStats.notes)
-    : blendActual(executionRatio, [], evidence.filter((item) => item.sourceType === "note").length, evidence.filter((item) => item.sourceType === "transcript").length);
+  const actual = executionRatio == null ? 0 : Math.min(100, Math.max(0, Math.round(executionRatio)));
   const zone = goal.timezone || "Asia/Kolkata";
   const todayKey = dayKey(new Date(), zone);
   await GoalSnapshot.findOneAndUpdate(
@@ -412,7 +336,7 @@ export const readGoalDashboard = async (goalId: unknown) => {
   const chartNeedsRebuild = !Array.isArray(points) || points.length < 2 || points.every((point) => point.actual == null);
   const workspace = (cached?.payload as { workspace?: { revision?: number } } | undefined)?.workspace;
   const workspaceMissing = !workspace;
-  const workspaceStale = workspace?.revision !== 3;
+  const workspaceStale = workspace?.revision !== 5;
   if (cached && cached.evidenceVersion === (goal.evidenceVersion || 0) && cached.payload && !chartNeedsRebuild && !workspaceMissing && !workspaceStale) {
     return cached.payload;
   }
