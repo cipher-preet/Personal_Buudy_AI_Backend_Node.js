@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import mongoose from "mongoose";
 
@@ -96,9 +98,19 @@ const presentInvite = async (invite: {
   };
 };
 
-const logoAttachment = () => ({
+const logoFilePath = () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(process.cwd(), "Mail/assets/kukunotes-icon.png"),
+    path.resolve(here, "../Mail/assets/kukunotes-icon.png"),
+    path.resolve(here, "../../Mail/assets/kukunotes-icon.png"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+};
+
+const logoAttachment = (filePath: string) => ({
   filename: "kukunotes-icon.png",
-  path: path.resolve(process.cwd(), "Mail/assets/kukunotes-icon.png"),
+  path: filePath,
   cid: "kukunotes-logo",
   contentType: "image/png",
 });
@@ -115,7 +127,12 @@ const spaceRows = (names: string[]) =>
     )
     .join("");
 
-const inviteEmailHtml = (input: { inviterName: string; spaceNames: string[]; link: string }) => {
+const inviteEmailHtml = (input: {
+  inviterName: string;
+  spaceNames: string[];
+  link: string;
+  includeLogo: boolean;
+}) => {
   const name = escapeHtml(input.inviterName);
   const link = escapeHtml(input.link);
   const spaces =
@@ -135,7 +152,7 @@ const inviteEmailHtml = (input: { inviterName: string; spaceNames: string[]; lin
                 <table role="presentation" cellpadding="0" cellspacing="0">
                   <tr>
                     <td style="vertical-align:middle;">
-                      <img src="cid:kukunotes-logo" width="40" height="40" alt="KukuNotes" style="display:block;width:40px;height:40px;border:0;border-radius:10px;" />
+                      ${input.includeLogo ? '<img src="cid:kukunotes-logo" width="40" height="40" alt="KukuNotes" style="display:block;width:40px;height:40px;border:0;border-radius:10px;" />' : ""}
                     </td>
                     <td style="padding-left:12px;vertical-align:middle;font-family:Inter,Segoe UI,Arial,sans-serif;font-size:18px;line-height:1;font-weight:700;color:#101828;">
                       Kuku<span style="color:#7c3aed;">Notes</span>
@@ -205,6 +222,10 @@ const sendInviteEmail = async (input: {
 }) => {
   const link = inviteLink(input.token);
   const spaceLine = input.spaceNames.length > 0 ? input.spaceNames.join(", ") : "their spaces";
+  const logo = logoFilePath();
+  if (!logo) {
+    console.warn("Invitation logo was not found. Sending the email without the image.");
+  }
   const mail = getEmailAdapter();
   await mail.send({
     to: [input.email],
@@ -223,8 +244,9 @@ const sendInviteEmail = async (input: {
       inviterName: input.inviterName,
       spaceNames: input.spaceNames,
       link,
+      includeLogo: Boolean(logo),
     }),
-    attachments: [logoAttachment()],
+    ...(logo ? { attachments: [logoAttachment(logo)] } : {}),
   });
 };
 
