@@ -5,6 +5,8 @@ import { CreateSpace } from "../Modals/Home.Modal.js";
 import { StagedNotes, StagedTasks } from "../Modals/Staged.Modal.js";
 import { DEFAULT_REMINDER_TIMEZONE } from "../reminderSchedule/constants.js";
 import { zonedLocalToUtc } from "../reminderSchedule/time.js";
+import User from "../../Authentication/Modals/user.modal.js";
+import { listActiveSharesForMember, resolveSpaceAccess } from "../../Teams/spaceAccess.js";
 
 const createIdFilter = (id: string) => {
   if (!mongoose.isValidObjectId(id)) {
@@ -14,6 +16,10 @@ const createIdFilter = (id: string) => {
   return {
     $in: [id, new mongoose.Types.ObjectId(id)],
   };
+};
+
+const contentOwnerForSpaceRead = async (viewerId: string, spaceId: string) => {
+  return resolveSpaceAccess(viewerId, spaceId);
 };
 
 const assertCanCreateInSpace = async (userId: string, spaceId: string) => {
@@ -412,18 +418,21 @@ export const getUserSpacesByUserIdRepository = async (
     const countBySpace = async (
       collectionName: "notes" | "tasks",
       enabled: boolean,
+      ownerId: string,
+      ids: typeof resultSpaceIds,
     ) => {
       const counts = new Map<string, number>();
-      if (!enabled || results.length === 0) {
+      if (!enabled || ids.length === 0) {
         return counts;
       }
+      const idStrings = ids.map((spaceId) => String(spaceId));
       const rows = await mongoose.connection
         .collection(collectionName)
         .aggregate<{ _id?: unknown; count?: number }>([
           {
             $match: {
-              userId: createIdFilter(userId),
-              spaceId: spaceIdFilter,
+              userId: createIdFilter(ownerId),
+              spaceId: { $in: [...ids, ...idStrings] },
               ...notDeletedFilter,
             },
           },
@@ -438,40 +447,108 @@ export const getUserSpacesByUserIdRepository = async (
     const includeNotes = counts === "all" || counts === "notes";
     const includeTasks = counts === "all" || counts === "tasks";
     const [noteCountBySpaceId, taskCountBySpaceId] = await Promise.all([
-      countBySpace("notes", includeNotes),
-      countBySpace("tasks", includeTasks),
+      countBySpace("notes", includeNotes, userId, resultSpaceIds),
+      countBySpace("tasks", includeTasks, userId, resultSpaceIds),
     ]);
+
+    const ownedSpaces = results.map(space => {
+      const countsForSpace = {
+        ...(includeTasks
+          ? { tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0 }
+          : {}),
+        ...(includeNotes
+          ? { notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0 }
+          : {}),
+      };
+      const shareFields = {
+        shared: false,
+        access: "owner" as "owner" | "view",
+        ownerUserId: String(userId),
+        sharedByName: "",
+      };
+
+      if (!card) {
+        return {
+          ...space,
+          ...countsForSpace,
+          ...shareFields,
+        };
+      }
+
+      return {
+        _id: space._id,
+        spacename: space.spacename ?? "",
+        description: space.description ?? "",
+        createdAt: space.createdAt ?? null,
+        updatedAt: space.updatedAt ?? null,
+        ...countsForSpace,
+        ...shareFields,
+      };
+    });
+
+    let sharedSpaces: typeof ownedSpaces = [];
+    if (!cursor) {
+      const shares = await listActiveSharesForMember(userId);
+      const sharedIds = shares
+        .map((share) => String(share.spaceId))
+        .filter((id) => !ownedSpaces.some((space) => String(space._id) === id));
+      if (sharedIds.length > 0) {
+        const extra = await CreateSpace.find({
+          _id: { $in: sharedIds },
+          deletedAt: null,
+        })
+          .select(card ? "_id spacename description createdAt updatedAt userId" : "-__v")
+          .lean();
+        const ownerIds = extra
+          .map((space) => space.userId)
+          .filter((id): id is NonNullable<typeof id> => id != null);
+        const owners = await User.find({
+          _id: { $in: ownerIds },
+        })
+          .select("name email")
+          .lean();
+        const ownerName = new Map(
+          owners.map((owner) => [String(owner._id), owner.name || owner.email || "KukuNotes user"]),
+        );
+        sharedSpaces = await Promise.all(
+          extra.map(async (space) => {
+            const ownerId = String(space.userId || "");
+            const [notes, tasks] = await Promise.all([
+              countBySpace("notes", includeNotes, ownerId, [space._id]),
+              countBySpace("tasks", includeTasks, ownerId, [space._id]),
+            ]);
+            const countsForSpace = {
+              ...(includeTasks ? { tasksCount: tasks.get(String(space._id)) ?? 0 } : {}),
+              ...(includeNotes ? { notesCount: notes.get(String(space._id)) ?? 0 } : {}),
+            };
+            const shareFields = {
+              shared: true,
+              access: "view" as "owner" | "view",
+              ownerUserId: ownerId,
+              sharedByName: ownerName.get(ownerId) || "KukuNotes user",
+            };
+            if (!card) {
+              return { ...space, ...countsForSpace, ...shareFields };
+            }
+            return {
+              _id: space._id,
+              spacename: space.spacename ?? "",
+              description: space.description ?? "",
+              createdAt: space.createdAt ?? null,
+              updatedAt: space.updatedAt ?? null,
+              ...countsForSpace,
+              ...shareFields,
+            };
+          }),
+        );
+      }
+    }
 
     return {
       status: STATUS_CODE.OK,
       message: "User spaces fetched successfully.",
       data: {
-        spaces: results.map(space => {
-          const countsForSpace = {
-            ...(includeTasks
-              ? { tasksCount: taskCountBySpaceId.get(String(space._id)) ?? 0 }
-              : {}),
-            ...(includeNotes
-              ? { notesCount: noteCountBySpaceId.get(String(space._id)) ?? 0 }
-              : {}),
-          };
-
-          if (!card) {
-            return {
-              ...space,
-              ...countsForSpace,
-            };
-          }
-
-          return {
-            _id: space._id,
-            spacename: space.spacename ?? "",
-            description: space.description ?? "",
-            createdAt: space.createdAt ?? null,
-            updatedAt: space.updatedAt ?? null,
-            ...countsForSpace,
-          };
-        }),
+        spaces: [...sharedSpaces, ...ownedSpaces],
         nextCursor,
       },
     };
@@ -940,18 +1017,26 @@ export const getStagedNotesBySpaceRepository = async (
     }
 
     const isFirstPage = !cursor;
+    const access = await contentOwnerForSpaceRead(userId, spaceId);
+    if (!access) {
+      return {
+        status: STATUS_CODE.FORBIDDEN,
+        message: "You can only view spaces shared with you.",
+      };
+    }
+    const contentUserId = access.ownerUserId;
 
     // Indexes must be ready before the list query; staged→main mirror is async
     // so the first GET is not blocked by backfill.
     await ensureListIndexes();
-    if (isFirstPage) {
+    if (isFirstPage && access.role === "owner") {
       void mirrorStagedNotesIntoMain(userId, spaceId).catch((error) => {
         console.log("async mirrorStagedNotesIntoMain failed", error);
       });
     }
 
     const baseQuery: Record<string, any> = {
-      userId: createIdFilter(userId),
+      userId: createIdFilter(contentUserId),
       spaceId: createIdFilter(spaceId),
       $and: [notDeletedFilter],
     };
@@ -1062,7 +1147,15 @@ export const getNoteConversationsBySpaceRepository = async (
       };
     }
 
-    if (!cursor) {
+    const access = await contentOwnerForSpaceRead(userId, spaceId);
+    if (!access) {
+      return {
+        status: STATUS_CODE.FORBIDDEN,
+        message: "You can only view spaces shared with you.",
+      };
+    }
+
+    if (!cursor && access.role === "owner") {
       void mirrorStagedNotesIntoMain(userId, spaceId).catch((error) => {
         console.log("async mirrorStagedNotesIntoMain (conversations) failed", error);
       });
@@ -1074,7 +1167,7 @@ export const getNoteConversationsBySpaceRepository = async (
       .aggregate([
         {
           $match: {
-            userId: createIdFilter(userId),
+            userId: createIdFilter(access.ownerUserId),
             spaceId: createIdFilter(spaceId),
             ...notDeletedFilter,
           },
@@ -1465,18 +1558,26 @@ export const getStagedTasksBySpaceRepository = async (
     }
 
     const isFirstPage = !cursor;
+    const access = await contentOwnerForSpaceRead(userId, spaceId);
+    if (!access) {
+      return {
+        status: STATUS_CODE.FORBIDDEN,
+        message: "You can only view spaces shared with you.",
+      };
+    }
+    const contentUserId = access.ownerUserId;
 
     // Indexes must be ready before the list query; staged→main mirror is async
     // so the first GET is not blocked by backfill.
     await ensureListIndexes();
-    if (isFirstPage) {
+    if (isFirstPage && access.role === "owner") {
       void mirrorStagedTasksIntoMain(userId, spaceId).catch((error) => {
         console.log("async mirrorStagedTasksIntoMain failed", error);
       });
     }
 
     const baseQuery: Record<string, any> = {
-      userId: createIdFilter(userId),
+      userId: createIdFilter(contentUserId),
       spaceId: createIdFilter(spaceId),
       $and: [notDeletedFilter],
     };

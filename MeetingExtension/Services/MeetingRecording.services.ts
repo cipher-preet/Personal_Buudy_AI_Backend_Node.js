@@ -65,6 +65,7 @@ import {
   sanitizeKeyPart,
 } from "../s3Keys.js";
 import { parseOptionalChecksum, presignReuseDecision } from "../checksum.js";
+import { listActiveSharesForMember, resolveSpaceAccess } from "../../Teams/spaceAccess.js";
 import { canAcceptUploads, isLateRecordedChunk, missingSequences, toClientStatus } from "../state.js";
 import { flattenTranscriptSegments } from "../transcript.js";
 import {
@@ -215,6 +216,32 @@ const requireOwnedMeeting = async (userId: string, meetingSessionId: string) => 
     );
   }
   return meeting;
+};
+
+const requireReadableMeeting = async (userId: string, meetingSessionId: string) => {
+  const meeting = await findMeetingById(meetingSessionId);
+  if (!meeting) {
+    throw new MeetingError(
+      MeetingErrorCode.MEETING_NOT_FOUND,
+      "Meeting not found.",
+      404,
+    );
+  }
+  if (String(meeting.userId) === String(userId)) {
+    return { meeting, role: "owner" as const };
+  }
+  const spaceId = meeting.spaceId ? String(meeting.spaceId) : "";
+  if (spaceId) {
+    const access = await resolveSpaceAccess(userId, spaceId);
+    if (access?.role === "viewer") {
+      return { meeting, role: "viewer" as const };
+    }
+  }
+  throw new MeetingError(
+    MeetingErrorCode.MEETING_ACCESS_DENIED,
+    "Meeting does not belong to this user.",
+    403,
+  );
 };
 
 const refreshChunkCounters = async (meeting: mongoose.Document & Record<string, any>) => {
@@ -874,16 +901,22 @@ export class MeetingRecordingService {
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 50) : 20;
     const cursor = typeof query.cursor === "string" ? query.cursor : undefined;
     const spaceIdFilter = parseOptionalObjectId(query.spaceId, "spaceId");
+    let contentUserId = ownerId;
+    let sharedSpaceIds: string[] = [];
 
     if (spaceIdFilter) {
-      const ownedSpace = await findOwnedSpace(ownerId, spaceIdFilter);
-      if (!ownedSpace) {
+      const access = await resolveSpaceAccess(ownerId, spaceIdFilter);
+      if (!access) {
         throw new MeetingError(
           MeetingErrorCode.MEETING_SPACE_NOT_FOUND,
           "Space not found or does not belong to this user.",
           404,
         );
       }
+      contentUserId = access.ownerUserId;
+    } else {
+      const shares = await listActiveSharesForMember(ownerId);
+      sharedSpaceIds = shares.map((share) => String(share.spaceId));
     }
 
     const page = await listMeetingsForUser({
@@ -891,12 +924,21 @@ export class MeetingRecordingService {
       limit,
       cursor,
       spaceId: spaceIdFilter,
+      contentUserId,
+      sharedSpaceIds,
     });
     const config = getMeetingConfig();
     const items = await Promise.all(
-      page.items.map((item: Record<string, any>) =>
-        this.withThumbnailUrl(this.toDetail(item), config.playbackTtlSeconds),
-      ),
+      page.items.map(async (item: Record<string, any>) => {
+        const detail = await this.withThumbnailUrl(
+          this.toDetail(item),
+          config.playbackTtlSeconds,
+        );
+        return {
+          ...detail,
+          shared: String(item.userId) !== String(ownerId),
+        };
+      }),
     );
     const card = query.view === "card";
 
@@ -909,15 +951,20 @@ export class MeetingRecordingService {
 
   async get(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting, role } = await requireReadableMeeting(
+      ownerId,
+      parseObjectId(meetingSessionId, "sessionId"),
+    );
     const conversation = await getConversation(String(meeting._id));
     const artifacts = await getArtifactCounts(String(meeting._id));
-    await this.syncFromConversation(meeting, conversation);
-    if (!meeting.finalRecordingS3Key) {
-      try {
-        await this.ensureVideoMergeEnqueued(meeting, getMeetingConfig(), "detail");
-      } catch {
-        // Detail view should still return; playback will retry.
+    if (role === "owner") {
+      await this.syncFromConversation(meeting, conversation);
+      if (!meeting.finalRecordingS3Key) {
+        try {
+          await this.ensureVideoMergeEnqueued(meeting, getMeetingConfig(), "detail");
+        } catch {
+          // Detail view should still return; playback will retry.
+        }
       }
     }
     const detail = await this.withThumbnailUrl(
@@ -926,6 +973,7 @@ export class MeetingRecordingService {
     );
     return {
       ...detail,
+      shared: role === "viewer",
       artifacts,
       conversationStatus: conversation?.status || null,
     };
@@ -933,7 +981,7 @@ export class MeetingRecordingService {
 
   async getTranscript(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting } = await requireReadableMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     const chunks = await listTranscriptChunks(String(meeting._id));
     const segments = flattenTranscriptSegments(chunks, meeting.startedAt);
     return {
@@ -945,19 +993,19 @@ export class MeetingRecordingService {
 
   async getSummary(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting } = await requireReadableMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     return getConversationSummary(String(meeting._id));
   }
 
   async getTasks(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting } = await requireReadableMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     return listConversationTasks(String(meeting._id));
   }
 
   async getNotes(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting } = await requireReadableMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     return listConversationNotes(String(meeting._id));
   }
 
@@ -1105,9 +1153,9 @@ export class MeetingRecordingService {
 
   async getPlayback(userId: string | undefined, meetingSessionId: string) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting, role } = await requireReadableMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     const config = getMeetingConfig();
-    if (!meeting.finalRecordingS3Key) {
+    if (role === "owner" && !meeting.finalRecordingS3Key) {
       try {
         await this.ensureVideoMergeEnqueued(meeting, config, "playback");
       } catch (error) {
@@ -1143,7 +1191,7 @@ export class MeetingRecordingService {
     rangeHeader?: string,
   ) {
     const ownerId = requireUserId(userId);
-    const meeting = await requireOwnedMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
+    const { meeting } = await requireReadableMeeting(ownerId, parseObjectId(meetingSessionId, "sessionId"));
     if (!meeting.finalRecordingS3Key) {
       throw new MeetingError(
         MeetingErrorCode.MEETING_PLAYBACK_NOT_READY,
@@ -1871,6 +1919,7 @@ export class MeetingRecordingService {
     createdAt?: Date | string | null;
     recordingStatus?: string;
     ready?: boolean;
+    shared?: boolean;
   }) {
     return {
       meetingSessionId: meeting.meetingSessionId,
@@ -1886,6 +1935,7 @@ export class MeetingRecordingService {
       createdAt: meeting.createdAt,
       recordingStatus: meeting.recordingStatus,
       ready: meeting.ready,
+      shared: Boolean(meeting.shared),
     };
   }
 

@@ -128,19 +128,30 @@ export const listMeetingsForUser = async ({
   limit,
   cursor,
   spaceId,
+  contentUserId,
+  sharedSpaceIds,
 }: {
   userId: string;
   limit: number;
   cursor?: string;
   spaceId?: string;
+  contentUserId?: string;
+  sharedSpaceIds?: string[];
 }) => {
-  const query: Record<string, unknown> = { userId: userFilter(userId) };
+  const query: Record<string, unknown> = {};
+  const spaceMatch = (id: string) =>
+    mongoose.isValidObjectId(id) ? { $in: [id, new mongoose.Types.ObjectId(id)] } : id;
 
   if (spaceId) {
-    // Match ObjectId or legacy string storage for the same space.
-    query.spaceId = mongoose.isValidObjectId(spaceId)
-      ? { $in: [spaceId, new mongoose.Types.ObjectId(spaceId)] }
-      : spaceId;
+    query.userId = userFilter(contentUserId || userId);
+    query.spaceId = spaceMatch(spaceId);
+  } else if (sharedSpaceIds && sharedSpaceIds.length > 0) {
+    const sharedMatch = sharedSpaceIds.flatMap((id) =>
+      mongoose.isValidObjectId(id) ? [id, new mongoose.Types.ObjectId(id)] : [id],
+    );
+    query.$or = [{ userId: userFilter(userId) }, { spaceId: { $in: sharedMatch } }];
+  } else {
+    query.userId = userFilter(userId);
   }
 
   if (cursor && mongoose.isValidObjectId(cursor)) {
